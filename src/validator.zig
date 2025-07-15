@@ -6,6 +6,7 @@ const utils = @import("utils.zig");
 const static_data_loader = @import("static_data_loader.zig");
 const character_mappings = @import("character_mappings.zig");
 const script_groups = @import("script_groups.zig");
+const confusables = @import("confusables.zig");
 
 // Type definitions
 pub const CodePoint = u32;
@@ -216,7 +217,14 @@ pub fn validateLabel(
     // Step 9: Check non-spacing marks
     try checkNonSpacingMarks(allocator, cps, &groups);
     
-    // Step 10: TODO: Check for confusables (simplified for now)
+    // Step 10: Check for whole-script confusables
+    var confusable_data = try static_data_loader.loadConfusables(allocator);
+    defer confusable_data.deinit();
+    
+    const is_confusable = try confusable_data.checkWholeScriptConfusables(cps, allocator);
+    if (is_confusable) {
+        return ValidationError.WholeScriptConfusable;
+    }
     
     const script_ref = ScriptGroupRef{
         .group = script_group,

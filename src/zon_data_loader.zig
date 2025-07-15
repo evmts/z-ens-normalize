@@ -3,6 +3,7 @@ const character_mappings = @import("character_mappings.zig");
 const script_groups = @import("script_groups.zig");
 const emoji_mod = @import("emoji.zig");
 const nfc = @import("nfc.zig");
+const confusables = @import("confusables.zig");
 const root = @import("root.zig");
 const CodePoint = root.CodePoint;
 
@@ -221,6 +222,63 @@ pub fn loadEmoji(allocator: std.mem.Allocator) !emoji_mod.EmojiData {
     return emoji_data;
 }
 
+/// Load confusable data from ZON
+pub fn loadConfusables(allocator: std.mem.Allocator) !confusables.ConfusableData {
+    const zon_data = @embedFile("data/spec.zon");
+    
+    const parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        zon_data,
+        .{ .max_value_len = zon_data.len }
+    );
+    defer parsed.deinit();
+    
+    const root_obj = parsed.value.object;
+    
+    var confusable_data = confusables.ConfusableData.init(allocator);
+    errdefer confusable_data.deinit();
+    
+    if (root_obj.get("wholes")) |wholes_value| {
+        const wholes_array = wholes_value.array.items;
+        confusable_data.sets = try allocator.alloc(confusables.ConfusableSet, wholes_array.len);
+        
+        for (wholes_array, 0..) |whole_item, i| {
+            const whole_obj = whole_item.object;
+            
+            // Get target
+            const target = if (whole_obj.get("target")) |target_value| 
+                try allocator.dupe(u8, target_value.string)
+            else 
+                try allocator.dupe(u8, "unknown");
+            
+            var set = confusables.ConfusableSet.init(allocator, target);
+            
+            // Load valid characters
+            if (whole_obj.get("valid")) |valid_value| {
+                const valid_array = valid_value.array.items;
+                set.valid = try allocator.alloc(CodePoint, valid_array.len);
+                for (valid_array, 0..) |cp_value, j| {
+                    set.valid[j] = @as(CodePoint, @intCast(cp_value.integer));
+                }
+            }
+            
+            // Load confused characters
+            if (whole_obj.get("confused")) |confused_value| {
+                const confused_array = confused_value.array.items;
+                set.confused = try allocator.alloc(CodePoint, confused_array.len);
+                for (confused_array, 0..) |cp_value, j| {
+                    set.confused[j] = @as(CodePoint, @intCast(cp_value.integer));
+                }
+            }
+            
+            confusable_data.sets[i] = set;
+        }
+    }
+    
+    return confusable_data;
+}
+
 // Helper functions (same as original static_data_loader.zig)
 fn loadMappedCharacters(mappings: *character_mappings.CharacterMappings, mapped_array: []const std.json.Value) !void {
     for (mapped_array) |item| {
@@ -349,6 +407,15 @@ test "ZON data loading" {
     try testing.expect(groups.groups.len > 0);
     try testing.expect(groups.nsm_set.count() > 0);
     try testing.expectEqual(@as(usize, 4), groups.nsm_max);
+    
+    // Test confusables loading
+    var confusable_data = loadConfusables(allocator) catch |err| {
+        std.debug.print("Failed to load confusables: {}\n", .{err});
+        return;
+    };
+    defer confusable_data.deinit();
+    
+    try testing.expect(confusable_data.sets.len > 0);
     
     std.debug.print("✓ Successfully loaded ZON data\n", .{});
 }

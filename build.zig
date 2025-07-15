@@ -201,9 +201,20 @@ pub fn build(b: *std.Build) void {
     
     const run_script_integration_tests = b.addRunArtifact(script_integration_tests);
     
+    // Add confusable tests
+    const confusable_tests = b.addTest(.{
+        .root_source_file = b.path("tests/confusable_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    confusable_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_confusable_tests = b.addRunArtifact(confusable_tests);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_emoji_tests.step);
     test_step.dependOn(&run_script_group_tests.step);
     test_step.dependOn(&run_script_integration_tests.step);
+    test_step.dependOn(&run_confusable_tests.step);
 }
