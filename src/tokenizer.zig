@@ -229,7 +229,9 @@ pub const CharacterSpecs = struct {
         return (cp >= 'a' and cp <= 'z') or 
                (cp >= 'A' and cp <= 'Z') or 
                (cp >= '0' and cp <= '9') or
-               cp == '-';
+               cp == '-' or
+               cp == '_' or  // underscore (validated for placement later)
+               cp == '\'';   // apostrophe (fenced character, validated for placement later)
     }
     
     pub fn isIgnored(self: *const CharacterSpecs, cp: CodePoint) bool {
