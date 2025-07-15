@@ -3,7 +3,7 @@ const root = @import("root.zig");
 const CodePoint = root.CodePoint;
 const constants = @import("constants.zig");
 const utils = @import("utils.zig");
-const tokens = @import("tokens.zig");
+const tokenizer = @import("tokenizer.zig");
 const code_points = @import("code_points.zig");
 const error_types = @import("error.zig");
 
@@ -26,12 +26,12 @@ pub const LabelType = union(enum) {
 };
 
 pub const ValidatedLabel = struct {
-    tokens: []const tokens.EnsNameToken,
+    tokens: []const tokenizer.Token,
     label_type: LabelType,
     allocator: std.mem.Allocator,
     
-    pub fn init(allocator: std.mem.Allocator, label_tokens: []const tokens.EnsNameToken, label_type: LabelType) !ValidatedLabel {
-        const owned_tokens = try allocator.dupe(tokens.EnsNameToken, label_tokens);
+    pub fn init(allocator: std.mem.Allocator, label_tokens: []const tokenizer.Token, label_type: LabelType) !ValidatedLabel {
+        const owned_tokens = try allocator.dupe(tokenizer.Token, label_tokens);
         return ValidatedLabel{
             .tokens = owned_tokens,
             .label_type = label_type,
@@ -45,7 +45,7 @@ pub const ValidatedLabel = struct {
 };
 
 pub const TokenizedLabel = struct {
-    tokens: []const tokens.EnsNameToken,
+    tokens: []const tokenizer.Token,
     allocator: std.mem.Allocator,
     
     pub fn isEmpty(self: TokenizedLabel) bool {
@@ -63,8 +63,7 @@ pub const TokenizedLabel = struct {
     
     pub fn isFullyAscii(self: TokenizedLabel) bool {
         for (self.tokens) |token| {
-            const cps = token.getCps(self.allocator) catch return false;
-            defer self.allocator.free(cps);
+            const cps = token.getCps();
             for (cps) |cp| {
                 if (!utils.isAscii(cp)) {
                     return false;
@@ -79,8 +78,7 @@ pub const TokenizedLabel = struct {
         defer result.deinit();
         
         for (self.tokens) |token| {
-            const cps = try token.getCps(allocator);
-            defer allocator.free(cps);
+            const cps = token.getCps();
             try result.appendSlice(cps);
         }
         
@@ -105,7 +103,7 @@ pub const TokenizedLabel = struct {
 
 pub fn validateName(
     allocator: std.mem.Allocator,
-    name: tokens.TokenizedName,
+    name: tokenizer.TokenizedName,
     specs: *const code_points.CodePointsSpecs,
 ) ![]ValidatedLabel {
     if (name.tokens.len == 0) {
@@ -171,11 +169,10 @@ fn checkNonEmpty(label: TokenizedLabel) !void {
     }
 }
 
-fn checkTokenTypes(allocator: std.mem.Allocator, label: TokenizedLabel) !void {
+fn checkTokenTypes(_: std.mem.Allocator, label: TokenizedLabel) !void {
     for (label.tokens) |token| {
         if (token.isDisallowed() or token.isStop()) {
-            const cps = try token.getCps(allocator);
-            defer allocator.free(cps);
+            const cps = token.getCps();
             
             // Check for invisible characters
             for (cps) |cp| {
@@ -260,7 +257,7 @@ test "validateLabel basic functionality" {
     
     // Test with empty label
     const empty_label = TokenizedLabel{
-        .tokens = &[_]tokens.EnsNameToken{},
+        .tokens = &[_]tokenizer.Token{},
         .allocator = allocator,
     };
     

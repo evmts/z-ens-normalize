@@ -31,8 +31,7 @@ fn beautifyLabel(allocator: std.mem.Allocator, label: validate.ValidatedLabel) !
     defer cps.deinit();
     
     for (label.tokens) |token| {
-        const token_cps = try token.getCps(allocator);
-        defer allocator.free(token_cps);
+        const token_cps = token.getCps();
         try cps.appendSlice(token_cps);
     }
     
@@ -71,16 +70,13 @@ test "beautifyLabels basic functionality" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    // Create a simple test label
-    const tokens = [_]@import("tokens.zig").EnsNameToken{
-        @import("tokens.zig").EnsNameToken{ .valid = @import("tokens.zig").TokenValid{ .cps = &[_]CodePoint{0x68, 0x65, 0x6C, 0x6C, 0x6F} } }, // "hello"
-    };
+    const tokenizer = @import("tokenizer.zig");
     
-    const label = validate.ValidatedLabel{
-        .tokens = &tokens,
-        .label_type = validate.LabelType.ascii,
-        .allocator = allocator,
-    };
+    // Create a simple test label
+    const token = try tokenizer.Token.createValid(allocator, &[_]CodePoint{0x68, 0x65, 0x6C, 0x6C, 0x6F}); // "hello"
+    const tokens = [_]tokenizer.Token{token};
+    
+    const label = try validate.ValidatedLabel.init(allocator, &tokens, validate.LabelType.ascii);
     
     const labels = [_]validate.ValidatedLabel{label};
     const result = beautifyLabels(allocator, &labels) catch |err| {

@@ -1,5 +1,5 @@
 const std = @import("std");
-const ens_normalize = @import("ens_normalize");
+const ens_normalize = @import("root.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -59,7 +59,7 @@ test "basic library functionality" {
         try testing.expect(err == ens_normalize.error_types.ProcessError.DisallowedSequence);
         return;
     };
-    defer tokenized.deinit(allocator);
+    defer tokenized.deinit();
     
     try testing.expect(tokenized.tokens.len > 0);
 }
