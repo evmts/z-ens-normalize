@@ -117,6 +117,16 @@ pub fn build(b: *std.Build) void {
     
     const run_integration_tests = b.addRunArtifact(integration_tests);
     
+    // Add tokenization tests
+    const tokenization_tests = b.addTest(.{
+        .root_source_file = b.path("tests/tokenization_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tokenization_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_tokenization_tests = b.addRunArtifact(tokenization_tests);
+    
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
@@ -124,4 +134,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    test_step.dependOn(&run_tokenization_tests.step);
 }
