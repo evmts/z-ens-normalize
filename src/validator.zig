@@ -208,13 +208,16 @@ pub fn validateLabel(
     const cps = try getAllCodePoints(allocator, tokenized_name);
     defer allocator.free(cps);
     
-    // Step 3: Check for leading underscore rule
+    // Step 3: Check for disallowed characters
+    try checkDisallowedCharacters(tokenized_name.tokens);
+    
+    // Step 4: Check for leading underscore rule
     try checkLeadingUnderscore(cps);
     
-    // Step 4: Determine script group
+    // Step 5: Determine script group
     const script_group = try determineScriptGroup(cps);
     
-    // Step 5: Apply script-specific validation
+    // Step 6: Apply script-specific validation
     switch (script_group) {
         .ASCII => {
             try checkASCIIRules(cps);
@@ -227,16 +230,16 @@ pub fn validateLabel(
         }
     }
     
-    // Step 6: Check fenced characters
+    // Step 7: Check fenced characters
     try checkFencedCharacters(cps);
     
-    // Step 7: Check combining marks
+    // Step 8: Check combining marks
     try checkCombiningMarks(cps);
     
-    // Step 8: Check non-spacing marks
+    // Step 9: Check non-spacing marks
     try checkNonSpacingMarks(allocator, cps);
     
-    // Step 9: TODO: Check for confusables (simplified for now)
+    // Step 10: TODO: Check for confusables (simplified for now)
     
     return ValidatedLabel.init(allocator, tokenized_name.tokens, script_group);
 }
@@ -264,6 +267,15 @@ fn checkNotEmpty(tokenized_name: tokenizer.TokenizedName) ValidationError!void {
     }
 }
 
+fn checkDisallowedCharacters(tokens: []const tokenizer.Token) ValidationError!void {
+    for (tokens) |token| {
+        switch (token.type) {
+            .disallowed => return ValidationError.DisallowedCharacter,
+            else => continue,
+        }
+    }
+}
+
 fn getAllCodePoints(allocator: std.mem.Allocator, tokenized_name: tokenizer.TokenizedName) ValidationError![]CodePoint {
     var cps = std.ArrayList(CodePoint).init(allocator);
     defer cps.deinit();
@@ -273,8 +285,7 @@ fn getAllCodePoints(allocator: std.mem.Allocator, tokenized_name: tokenizer.Toke
             .valid => |v| try cps.appendSlice(v.cps),
             .mapped => |m| try cps.appendSlice(m.cps),
             .stop => |s| try cps.append(s.cp),
-            .disallowed => |d| return ValidationError.DisallowedCharacter,
-            else => continue, // Skip ignored tokens
+            else => continue, // Skip ignored and disallowed tokens
         }
     }
     
@@ -334,7 +345,7 @@ fn determineScriptGroup(cps: []const CodePoint) ValidationError!ScriptGroup {
     while (iterator.next()) |entry| {
         if (entry.value.* > max_count) {
             max_count = entry.value.*;
-            primary_script = entry.key.*;
+            primary_script = entry.key;
         }
     }
     
@@ -410,6 +421,7 @@ fn checkCombiningMarks(cps: []const CodePoint) ValidationError!void {
 }
 
 fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint) ValidationError!void {
+    _ = allocator; // TODO: Use for NFD normalization
     if (cps.len == 0) return;
     
     // TODO: Implement full Unicode NFD normalization for proper NSM checking
@@ -462,12 +474,11 @@ test "validator - empty label" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
     
-    const specs = code_points.CodePointsSpecs.init(allocator);
-    const empty_tokenized = tokenizer.TokenizedName.init(allocator, "");
+    const specs = code_points.CodePointsSpecs.init(testing.allocator);
+    const empty_tokenized = tokenizer.TokenizedName.init(testing.allocator, "");
     
-    const result = validateLabel(allocator, empty_tokenized, &specs);
+    const result = validateLabel(testing.allocator, empty_tokenized, &specs);
     try testing.expectError(ValidationError.EmptyLabel, result);
 }
 
@@ -564,7 +575,6 @@ test "validator - script group detection" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
     
     // Test script group detection
     try testing.expectEqual(ScriptGroup.ASCII, CharacterValidator.getScriptGroup('a'));
