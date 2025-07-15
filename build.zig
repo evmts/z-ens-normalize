@@ -146,7 +146,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_tokenization_tests.step);
     
+    // Add validation tests
+    const validation_tests = b.addTest(.{
+        .root_source_file = b.path("tests/validation_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    validation_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_validation_tests = b.addRunArtifact(validation_tests);
+    
     // Add separate fuzz test step
     const fuzz_step = b.step("fuzz", "Run fuzz tests");
     fuzz_step.dependOn(&run_tokenization_fuzz_tests.step);
+    
+    // Update main test step
+    test_step.dependOn(&run_validation_tests.step);
 }

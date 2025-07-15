@@ -14,6 +14,7 @@ pub const tokens = @import("tokens.zig");
 pub const tokenizer = @import("tokenizer.zig");
 pub const utils = @import("utils.zig");
 pub const validate = @import("validate.zig");
+pub const validator = @import("validator.zig");
 
 // Re-export main API
 pub const EnsNameNormalizer = normalizer.EnsNameNormalizer;
