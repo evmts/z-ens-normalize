@@ -21,7 +21,7 @@ pub fn loadCharacterMappings(allocator: std.mem.Allocator) !character_mappings.C
     
     const root_obj = parsed.value.object;
     
-    var mappings = character_mappings.CharacterMappings.init(allocator);
+    var mappings = try character_mappings.CharacterMappings.init(allocator);
     errdefer mappings.deinit();
     
     // Load mapped characters
@@ -94,7 +94,7 @@ pub fn loadScriptGroups(allocator: std.mem.Allocator) !script_groups.ScriptGroup
         // Add combining marks (if present)
         if (group_obj.get("cm")) |cm_value| {
             for (cm_value.array.items) |cp_value| {
-                try group.addCM(@as(CodePoint, @intCast(cp_value.integer)));
+                try group.addCombiningMark(@as(CodePoint, @intCast(cp_value.integer)));
             }
         }
         
@@ -111,7 +111,7 @@ pub fn loadScriptGroups(allocator: std.mem.Allocator) !script_groups.ScriptGroup
     
     // Load NSM max
     if (root_obj.get("nsm_max")) |nsm_max_value| {
-        groups.nsm_max = @as(usize, @intCast(nsm_max_value.integer));
+        groups.nsm_max = @as(u32, @intCast(nsm_max_value.integer));
     }
     
     return groups;
@@ -205,7 +205,7 @@ pub fn loadEmoji(allocator: std.mem.Allocator) !emoji_mod.EmojiData {
     
     const root_obj = parsed.value.object;
     
-    var emoji_data = emoji_mod.EmojiData.init(allocator);
+    var emoji_data = emoji_mod.EmojiMap.init(allocator);
     errdefer emoji_data.deinit();
     
     if (root_obj.get("emoji")) |emoji_value| {
@@ -257,19 +257,21 @@ pub fn loadConfusables(allocator: std.mem.Allocator) !confusables.ConfusableData
             // Load valid characters
             if (whole_obj.get("valid")) |valid_value| {
                 const valid_array = valid_value.array.items;
-                set.valid = try allocator.alloc(CodePoint, valid_array.len);
+                var valid_slice = try allocator.alloc(CodePoint, valid_array.len);
                 for (valid_array, 0..) |cp_value, j| {
-                    set.valid[j] = @as(CodePoint, @intCast(cp_value.integer));
+                    valid_slice[j] = @as(CodePoint, @intCast(cp_value.integer));
                 }
+                set.valid = valid_slice;
             }
             
             // Load confused characters
             if (whole_obj.get("confused")) |confused_value| {
                 const confused_array = confused_value.array.items;
-                set.confused = try allocator.alloc(CodePoint, confused_array.len);
+                var confused_slice = try allocator.alloc(CodePoint, confused_array.len);
                 for (confused_array, 0..) |cp_value, j| {
-                    set.confused[j] = @as(CodePoint, @intCast(cp_value.integer));
+                    confused_slice[j] = @as(CodePoint, @intCast(cp_value.integer));
                 }
+                set.confused = confused_slice;
             }
             
             confusable_data.sets[i] = set;
@@ -392,7 +394,7 @@ test "ZON data loading" {
     };
     defer mappings.deinit();
     
-    try testing.expect(mappings.mapped_chars.count() > 0);
+    try testing.expect(mappings.unicode_mappings.count() > 0);
     try testing.expect(mappings.valid_chars.count() > 0);
     try testing.expect(mappings.ignored_chars.count() > 0);
     try testing.expect(mappings.fenced_chars.count() > 0);

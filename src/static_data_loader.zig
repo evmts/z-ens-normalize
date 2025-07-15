@@ -47,7 +47,7 @@ test "static data loading from ZON" {
     };
     defer mappings.deinit();
     
-    try testing.expect(mappings.mapped_chars.count() > 0);
+    try testing.expect(mappings.unicode_mappings.count() > 0);
     try testing.expect(mappings.valid_chars.count() > 0);
     try testing.expect(mappings.ignored_chars.count() > 0);
     try testing.expect(mappings.fenced_chars.count() > 0);

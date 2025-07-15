@@ -112,7 +112,7 @@ test "emoji data loading" {
     const allocator = arena.allocator();
     
     // Test loading emoji data from spec.json
-    var emoji_map = try static_data_loader.loadEmojiMap(allocator);
+    var emoji_map = try static_data_loader.loadEmoji(allocator);
     defer emoji_map.deinit();
     
     // Should have loaded many emojis

@@ -365,7 +365,7 @@ fn tokenizeInputWithMappings(
     var mappings = static_data_loader.loadCharacterMappings(allocator) catch |err| blk: {
         // Fall back to basic mappings if spec.zon loading fails
         std.debug.print("Warning: Failed to load spec.zon: {}, using basic mappings\n", .{err});
-        break :blk try static_data_loader.loadBasicMappings(allocator);
+        break :blk try static_data_loader.loadCharacterMappings(allocator);
     };
     defer mappings.deinit();
     
@@ -382,7 +382,7 @@ fn tokenizeInputWithMappingsImpl(
     defer tokens.deinit();
     
     // Load emoji map
-    var emoji_map = static_data_loader.loadEmojiMap(allocator) catch |err| {
+    var emoji_map = static_data_loader.loadEmoji(allocator) catch |err| {
         // If emoji loading fails, fall back to character-by-character processing
         std.debug.print("Warning: Failed to load emoji map: {}\n", .{err});
         return tokenizeWithoutEmoji(allocator, input, mappings, apply_nfc);

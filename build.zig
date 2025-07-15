@@ -211,10 +211,21 @@ pub fn build(b: *std.Build) void {
     
     const run_confusable_tests = b.addRunArtifact(confusable_tests);
     
+    // Add combining mark tests
+    const combining_mark_tests = b.addTest(.{
+        .root_source_file = b.path("tests/combining_mark_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    combining_mark_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_combining_mark_tests = b.addRunArtifact(combining_mark_tests);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_emoji_tests.step);
     test_step.dependOn(&run_script_group_tests.step);
     test_step.dependOn(&run_script_integration_tests.step);
     test_step.dependOn(&run_confusable_tests.step);
+    test_step.dependOn(&run_combining_mark_tests.step);
 }

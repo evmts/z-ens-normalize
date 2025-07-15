@@ -7,6 +7,7 @@ const static_data_loader = @import("static_data_loader.zig");
 const character_mappings = @import("character_mappings.zig");
 const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
+const combining_marks = @import("combining_marks.zig");
 
 // Type definitions
 pub const CodePoint = u32;
@@ -18,6 +19,15 @@ pub const ValidationError = error{
     UnderscoreInMiddle,
     LeadingCombiningMark,
     CombiningMarkAfterEmoji,
+    DisallowedCombiningMark,
+    CombiningMarkAfterFenced,
+    InvalidCombiningMarkBase,
+    ExcessiveCombiningMarks,
+    InvalidArabicDiacritic,
+    ExcessiveArabicDiacritics,
+    InvalidDevanagariMatras,
+    InvalidThaiVowelSigns,
+    CombiningMarkOrderError,
     FencedLeading,
     FencedTrailing,
     FencedAdjacent,
@@ -211,8 +221,8 @@ pub fn validateLabel(
     // Step 7: Check fenced characters
     try checkFencedCharacters(allocator, cps);
     
-    // Step 8: Check combining marks
-    try checkCombiningMarks(cps);
+    // Step 8: Check combining marks with script group validation
+    try combining_marks.validateCombiningMarks(cps, script_group, allocator);
     
     // Step 9: Check non-spacing marks
     try checkNonSpacingMarks(allocator, cps, &groups);
@@ -412,17 +422,7 @@ fn checkFencedCharactersHardcoded(cps: []const CodePoint) ValidationError!void {
     }
 }
 
-fn checkCombiningMarks(cps: []const CodePoint) ValidationError!void {
-    if (cps.len == 0) return;
-    
-    // Check for leading combining mark
-    if (CharacterValidator.isCombiningMark(cps[0])) {
-        return ValidationError.LeadingCombiningMark;
-    }
-    
-    // Additional combining mark rules would go here
-    // For now, basic check is sufficient
-}
+// This function is now replaced by combining_marks.validateCombiningMarks
 
 fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint, groups: *const script_groups.ScriptGroups) ValidationError!void {
     _ = allocator; // TODO: Use for NFD normalization

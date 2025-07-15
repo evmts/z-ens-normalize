@@ -10,7 +10,7 @@ const ValidationTestCase = struct {
     name: []const u8,
     input: []const u8,
     expected_error: ?validator.ValidationError = null,
-    expected_script: ?validator.ScriptGroup = null,
+    expected_script: ?[]const u8 = null,
     comment: ?[]const u8 = null,
 };
 

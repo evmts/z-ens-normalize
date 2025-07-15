@@ -151,7 +151,7 @@ test "confusables - performance test" {
     const test_sizes = [_]usize{ 1, 5, 10, 50, 100 };
     
     for (test_sizes) |size| {
-        var test_cps = try allocator.alloc(u32, size);
+        const test_cps = try allocator.alloc(u32, size);
         defer allocator.free(test_cps);
         
         // Fill with ASCII characters
