@@ -25,6 +25,12 @@ zig-cache/
 .zig-cache/
 zig-out/
 
+# Object files and libraries
+*.o
+*.a
+*.so
+*.dylib
+
 # Reference implementations (cloned repos)
 ens-normalize.js/
 ENSNormalize.cs/
