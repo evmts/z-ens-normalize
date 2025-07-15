@@ -187,7 +187,12 @@ pub fn validateLabel(
     try checkLeadingUnderscore(cps);
     
     // Step 5: Load script groups and determine script group
-    var groups = try static_data_loader.loadScriptGroups(allocator);
+    var groups = static_data_loader.loadScriptGroups(allocator) catch |err| {
+        switch (err) {
+            error.OutOfMemory => return ValidationError.OutOfMemory,
+            else => return ValidationError.OutOfMemory, // Map all other errors to OutOfMemory
+        }
+    };
     defer groups.deinit();
     
     // Get unique code points for script detection
@@ -246,7 +251,12 @@ pub fn validateLabel(
     };
     
     // Step 10: Check for whole-script confusables
-    var confusable_data = try static_data_loader.loadConfusables(allocator);
+    var confusable_data = static_data_loader.loadConfusables(allocator) catch |err| {
+        switch (err) {
+            error.OutOfMemory => return ValidationError.OutOfMemory,
+            else => return ValidationError.OutOfMemory, // Map all other errors to OutOfMemory
+        }
+    };
     defer confusable_data.deinit();
     
     const is_confusable = try confusable_data.checkWholeScriptConfusables(cps, allocator);

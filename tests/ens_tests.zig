@@ -192,7 +192,7 @@ test "tokenization" {
         try testing.expect(err == ens_normalize.error_types.ProcessError.DisallowedSequence);
         return;
     };
-    defer tokenized.deinit(allocator);
+    defer tokenized.deinit();
     
     try testing.expect(tokenized.tokens.len > 0);
     try testing.expect(tokenized.tokens[0].isText());

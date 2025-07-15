@@ -166,7 +166,7 @@ pub fn loadNFC(allocator: std.mem.Allocator) !nfc.NFCData {
             if (entry_array.len >= 2) {
                 const cp = @as(CodePoint, @intCast(entry_array[0].integer));
                 const rank = @as(u8, @intCast(entry_array[1].integer));
-                try nfc_data.ranks.put(cp, rank);
+                try nfc_data.combining_class.put(cp, @as(u8, @intCast(rank)));
             }
         }
     }
@@ -184,7 +184,7 @@ pub fn loadNFC(allocator: std.mem.Allocator) !nfc.NFCData {
     if (spec_root_obj.get("nfc_check")) |nfc_check_value| {
         for (nfc_check_value.array.items) |item| {
             const cp = @as(CodePoint, @intCast(item.integer));
-            try nfc_data.check_set.put(cp, {});
+            try nfc_data.nfc_check.put(cp, {});
         }
     }
     

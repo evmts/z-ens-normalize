@@ -433,7 +433,7 @@ fn tokenizeInputWithMappingsImpl(
     
     // Apply NFC transformation if requested
     if (apply_nfc) {
-        var nfc_data = try static_data_loader.loadNFCData(allocator);
+        var nfc_data = try static_data_loader.loadNFC(allocator);
         defer nfc_data.deinit();
         try applyNFCTransform(allocator, &tokens, &nfc_data);
     }
@@ -655,7 +655,7 @@ fn tokenizeWithoutEmoji(
     
     // Apply NFC transformation if requested
     if (apply_nfc) {
-        var nfc_data = try static_data_loader.loadNFCData(allocator);
+        var nfc_data = try static_data_loader.loadNFC(allocator);
         defer nfc_data.deinit();
         try applyNFCTransform(allocator, &tokens, &nfc_data);
     }
