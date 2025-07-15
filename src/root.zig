@@ -12,6 +12,7 @@ pub const join = @import("join.zig");
 pub const normalizer = @import("normalizer.zig");
 pub const static_data = @import("static_data.zig");
 pub const static_data_loader = @import("static_data_loader.zig");
+pub const zon_data_loader = @import("zon_data_loader.zig");
 pub const tokens = @import("tokens.zig");
 pub const tokenizer = @import("tokenizer.zig");
 pub const utils = @import("utils.zig");

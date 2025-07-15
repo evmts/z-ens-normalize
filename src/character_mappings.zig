@@ -156,7 +156,7 @@ pub fn createWithUnicodeMappings(allocator: std.mem.Allocator) !CharacterMapping
 
 /// Add common Unicode character mappings
 fn addCommonUnicodeMappings(mappings: *CharacterMappings) !void {
-    // Mathematical symbols - ALL map directly to lowercase per reference spec.json
+    // Mathematical symbols - ALL map directly to lowercase per reference spec.zon
     try mappings.addMapping(0x2102, &[_]CodePoint{0x0063}); // ℂ -> c
     try mappings.addMapping(0x210A, &[_]CodePoint{0x0067}); // ℊ -> g  
     try mappings.addMapping(0x210B, &[_]CodePoint{0x0068}); // ℋ -> h

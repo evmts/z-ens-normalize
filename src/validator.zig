@@ -332,7 +332,7 @@ fn checkUnicodeRules(cps: []const CodePoint) ValidationError!void {
 fn checkFencedCharacters(allocator: std.mem.Allocator, cps: []const CodePoint) ValidationError!void {
     if (cps.len == 0) return;
     
-    // Load character mappings to get fenced characters from spec.json
+    // Load character mappings to get fenced characters from spec.zon
     var mappings = static_data_loader.loadCharacterMappings(allocator) catch |err| {
         std.debug.print("Warning: Failed to load character mappings: {}, using hardcoded\n", .{err});
         // Fallback to hardcoded check
@@ -548,7 +548,7 @@ test "validator - fenced characters" {
     
     const specs = code_points.CodePointsSpecs.init(allocator);
     
-    // TODO: Implement proper fenced character checking from spec.json
+    // TODO: Implement proper fenced character checking from spec.zon
     // For now, skip this test as apostrophe is being mapped to U+2019
     // and fenced character rules need to be implemented properly
     {

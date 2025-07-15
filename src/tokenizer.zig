@@ -361,10 +361,10 @@ fn tokenizeInputWithMappings(
     input: []const u8,
     apply_nfc: bool,
 ) ![]Token {
-    // Load complete character mappings from spec.json
+    // Load complete character mappings from spec.zon
     var mappings = static_data_loader.loadCharacterMappings(allocator) catch |err| blk: {
-        // Fall back to basic mappings if spec.json loading fails
-        std.debug.print("Warning: Failed to load spec.json: {}, using basic mappings\n", .{err});
+        // Fall back to basic mappings if spec.zon loading fails
+        std.debug.print("Warning: Failed to load spec.zon: {}, using basic mappings\n", .{err});
         break :blk try static_data_loader.loadBasicMappings(allocator);
     };
     defer mappings.deinit();
