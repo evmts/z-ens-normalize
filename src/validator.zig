@@ -5,6 +5,7 @@ const constants = @import("constants.zig");
 const utils = @import("utils.zig");
 const static_data_loader = @import("static_data_loader.zig");
 const character_mappings = @import("character_mappings.zig");
+const script_groups = @import("script_groups.zig");
 
 // Type definitions
 pub const CodePoint = u32;
@@ -28,46 +29,19 @@ pub const ValidationError = error{
     InvalidUtf8,
 };
 
-// Script group types
-pub const ScriptGroup = enum {
-    ASCII,
-    Emoji,
-    Latin,
-    Greek,
-    Cyrillic,
-    Arabic,
-    Hebrew,
-    Hiragana,
-    Katakana,
-    Han,
-    Hangul,
-    Unknown,
-    
-    pub fn toString(self: ScriptGroup) []const u8 {
-        return switch (self) {
-            .ASCII => "ASCII",
-            .Emoji => "Emoji",
-            .Latin => "Latin",
-            .Greek => "Greek",
-            .Cyrillic => "Cyrillic",
-            .Arabic => "Arabic",
-            .Hebrew => "Hebrew",
-            .Hiragana => "Hiragana",
-            .Katakana => "Katakana",
-            .Han => "Han",
-            .Hangul => "Hangul",
-            .Unknown => "Unknown",
-        };
-    }
+// Script group reference
+pub const ScriptGroupRef = struct {
+    group: *const script_groups.ScriptGroup,
+    name: []const u8,
 };
 
 // Validated label result
 pub const ValidatedLabel = struct {
     tokens: []const tokenizer.Token,
-    script_group: ScriptGroup,
+    script_group: ScriptGroupRef,
     allocator: std.mem.Allocator,
     
-    pub fn init(allocator: std.mem.Allocator, tokens: []const tokenizer.Token, script_group: ScriptGroup) !ValidatedLabel {
+    pub fn init(allocator: std.mem.Allocator, tokens: []const tokenizer.Token, script_group: ScriptGroupRef) !ValidatedLabel {
         const owned_tokens = try allocator.dupe(tokenizer.Token, tokens);
         return ValidatedLabel{
             .tokens = owned_tokens,
@@ -86,11 +60,11 @@ pub const ValidatedLabel = struct {
     }
     
     pub fn isASCII(self: ValidatedLabel) bool {
-        return self.script_group == .ASCII;
+        return std.mem.eql(u8, self.script_group.name, "ASCII");
     }
     
     pub fn isEmoji(self: ValidatedLabel) bool {
-        return self.script_group == .Emoji;
+        return std.mem.eql(u8, self.script_group.name, "Emoji");
     }
 };
 
@@ -170,30 +144,7 @@ pub const CharacterValidator = struct {
         return 0x2E; // '.'
     }
     
-    // Simplified script detection based on Unicode ranges
-    pub fn getScriptGroup(cp: CodePoint) ScriptGroup {
-        return switch (cp) {
-            0x0000...0x007F => .ASCII,
-            0x0080...0x00FF => .Latin,
-            0x0100...0x017F => .Latin,
-            0x0180...0x024F => .Latin,
-            0x0370...0x03FF => .Greek,
-            0x0400...0x04FF => .Cyrillic,
-            0x0500...0x052F => .Cyrillic,
-            0x0590...0x05FF => .Hebrew,
-            0x0600...0x06FF => .Arabic,
-            0x0700...0x074F => .Arabic,
-            0x3040...0x309F => .Hiragana,
-            0x30A0...0x30FF => .Katakana,
-            0x4E00...0x9FFF => .Han,
-            0xAC00...0xD7AF => .Hangul,
-            0x1F600...0x1F64F => .Emoji,
-            0x1F300...0x1F5FF => .Emoji,
-            0x1F680...0x1F6FF => .Emoji,
-            0x1F900...0x1F9FF => .Emoji,
-            else => .Unknown,
-        };
-    }
+    // This is now handled by script_groups.zig
 };
 
 // Main validation function
@@ -217,20 +168,43 @@ pub fn validateLabel(
     // Step 4: Check for leading underscore rule
     try checkLeadingUnderscore(cps);
     
-    // Step 5: Determine script group
-    const script_group = try determineScriptGroup(cps);
+    // Step 5: Load script groups and determine script group
+    var groups = try static_data_loader.loadScriptGroups(allocator);
+    defer groups.deinit();
+    
+    // Get unique code points for script detection
+    var unique_set = std.AutoHashMap(CodePoint, void).init(allocator);
+    defer unique_set.deinit();
+    
+    for (cps) |cp| {
+        try unique_set.put(cp, {});
+    }
+    
+    var unique_cps = try allocator.alloc(CodePoint, unique_set.count());
+    defer allocator.free(unique_cps);
+    
+    var iter = unique_set.iterator();
+    var idx: usize = 0;
+    while (iter.next()) |entry| {
+        unique_cps[idx] = entry.key_ptr.*;
+        idx += 1;
+    }
+    
+    const script_group = groups.determineScriptGroup(unique_cps, allocator) catch |err| {
+        switch (err) {
+            error.DisallowedCharacter => return ValidationError.DisallowedCharacter,
+            error.EmptyInput => return ValidationError.EmptyLabel,
+            else => return ValidationError.IllegalMixture,
+        }
+    };
     
     // Step 6: Apply script-specific validation
-    switch (script_group) {
-        .ASCII => {
-            try checkASCIIRules(cps);
-        },
-        .Emoji => {
-            try checkEmojiRules(tokenized_name.tokens);
-        },
-        else => {
-            try checkUnicodeRules(cps);
-        }
+    if (std.mem.eql(u8, script_group.name, "ASCII")) {
+        try checkASCIIRules(cps);
+    } else if (std.mem.eql(u8, script_group.name, "Emoji")) {
+        try checkEmojiRules(tokenized_name.tokens);
+    } else {
+        try checkUnicodeRules(cps);
     }
     
     // Step 7: Check fenced characters
@@ -240,11 +214,15 @@ pub fn validateLabel(
     try checkCombiningMarks(cps);
     
     // Step 9: Check non-spacing marks
-    try checkNonSpacingMarks(allocator, cps);
+    try checkNonSpacingMarks(allocator, cps, &groups);
     
     // Step 10: TODO: Check for confusables (simplified for now)
     
-    return ValidatedLabel.init(allocator, tokenized_name.tokens, script_group);
+    const script_ref = ScriptGroupRef{
+        .group = script_group,
+        .name = script_group.name,
+    };
+    return ValidatedLabel.init(allocator, tokenized_name.tokens, script_ref);
 }
 
 // Validation helper functions
@@ -316,44 +294,7 @@ fn checkLeadingUnderscore(cps: []const CodePoint) ValidationError!void {
     }
 }
 
-fn determineScriptGroup(cps: []const CodePoint) ValidationError!ScriptGroup {
-    if (cps.len == 0) return .ASCII;
-    
-    // Check if all are ASCII
-    var all_ascii = true;
-    for (cps) |cp| {
-        if (!CharacterValidator.isASCII(cp)) {
-            all_ascii = false;
-            break;
-        }
-    }
-    
-    if (all_ascii) return .ASCII;
-    
-    // For now, simplified script detection
-    // In a full implementation, this would be more sophisticated
-    var script_counts = std.EnumMap(ScriptGroup, usize).init(.{});
-    
-    for (cps) |cp| {
-        const script = CharacterValidator.getScriptGroup(cp);
-        const count = script_counts.get(script) orelse 0;
-        script_counts.put(script, count + 1);
-    }
-    
-    // Find the most common script
-    var max_count: usize = 0;
-    var primary_script: ScriptGroup = .Unknown;
-    
-    var iterator = script_counts.iterator();
-    while (iterator.next()) |entry| {
-        if (entry.value.* > max_count) {
-            max_count = entry.value.*;
-            primary_script = entry.key;
-        }
-    }
-    
-    return primary_script;
-}
+// This function is now replaced by script_groups.determineScriptGroup
 
 fn checkASCIIRules(cps: []const CodePoint) ValidationError!void {
     // ASCII label extension rule: no '--' at positions 2-3
@@ -475,7 +416,7 @@ fn checkCombiningMarks(cps: []const CodePoint) ValidationError!void {
     // For now, basic check is sufficient
 }
 
-fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint) ValidationError!void {
+fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint, groups: *const script_groups.ScriptGroups) ValidationError!void {
     _ = allocator; // TODO: Use for NFD normalization
     if (cps.len == 0) return;
     
@@ -486,11 +427,11 @@ fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint) Va
     var prev_nsm: ?CodePoint = null;
     
     for (cps) |cp| {
-        if (CharacterValidator.isNonSpacingMark(cp)) {
+        if (groups.isNSM(cp)) {
             nsm_count += 1;
             
             // Check for excessive NSM
-            if (nsm_count > CharacterValidator.NSM_MAX) {
+            if (nsm_count > groups.nsm_max) {
                 return ValidationError.ExcessiveNSM;
             }
             
@@ -551,7 +492,7 @@ test "validator - ASCII label" {
     defer result.deinit();
     
     try testing.expect(result.isASCII());
-    try testing.expectEqualStrings("ASCII", result.script_group.toString());
+    try testing.expectEqualStrings("ASCII", result.script_group.name);
 }
 
 test "validator - underscore rules" {
@@ -635,10 +576,23 @@ test "validator - script group detection" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
+    const allocator = arena.allocator();
     
-    // Test script group detection
-    try testing.expectEqual(ScriptGroup.ASCII, CharacterValidator.getScriptGroup('a'));
-    try testing.expectEqual(ScriptGroup.Greek, CharacterValidator.getScriptGroup(0x03B1)); // α
-    try testing.expectEqual(ScriptGroup.Cyrillic, CharacterValidator.getScriptGroup(0x0430)); // а
-    try testing.expectEqual(ScriptGroup.Han, CharacterValidator.getScriptGroup(0x4E00)); // 一
+    // Load script groups
+    var groups = try static_data_loader.loadScriptGroups(allocator);
+    defer groups.deinit();
+    
+    // Test ASCII
+    {
+        const cps = [_]CodePoint{'a', 'b', 'c'};
+        const group = try groups.determineScriptGroup(&cps, allocator);
+        try testing.expectEqualStrings("ASCII", group.name);
+    }
+    
+    // Test mixed script rejection
+    {
+        const cps = [_]CodePoint{'a', 0x03B1}; // a + α
+        const result = groups.determineScriptGroup(&cps, allocator);
+        try testing.expectError(error.DisallowedCharacter, result);
+    }
 }

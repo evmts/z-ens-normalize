@@ -191,8 +191,19 @@ pub fn build(b: *std.Build) void {
     
     const run_script_group_tests = b.addRunArtifact(script_group_tests);
     
+    // Add script integration tests
+    const script_integration_tests = b.addTest(.{
+        .root_source_file = b.path("tests/script_integration_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    script_integration_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_script_integration_tests = b.addRunArtifact(script_integration_tests);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_emoji_tests.step);
     test_step.dependOn(&run_script_group_tests.step);
+    test_step.dependOn(&run_script_integration_tests.step);
 }
