@@ -171,6 +171,28 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&run_tokenization_fuzz_tests.step);
     fuzz_step.dependOn(&run_validation_fuzz_tests.step);
     
+    // Add emoji tests
+    const emoji_tests = b.addTest(.{
+        .root_source_file = b.path("tests/emoji_token_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    emoji_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_emoji_tests = b.addRunArtifact(emoji_tests);
+    
+    // Add script group tests
+    const script_group_tests = b.addTest(.{
+        .root_source_file = b.path("tests/script_group_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    script_group_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_script_group_tests = b.addRunArtifact(script_group_tests);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
+    test_step.dependOn(&run_emoji_tests.step);
+    test_step.dependOn(&run_script_group_tests.step);
 }
