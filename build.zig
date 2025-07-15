@@ -221,6 +221,16 @@ pub fn build(b: *std.Build) void {
     
     const run_combining_mark_tests = b.addRunArtifact(combining_mark_tests);
     
+    // Add NSM validation tests
+    const nsm_validation_tests = b.addTest(.{
+        .root_source_file = b.path("tests/nsm_validation_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nsm_validation_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_nsm_validation_tests = b.addRunArtifact(nsm_validation_tests);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_emoji_tests.step);
@@ -228,4 +238,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_script_integration_tests.step);
     test_step.dependOn(&run_confusable_tests.step);
     test_step.dependOn(&run_combining_mark_tests.step);
+    test_step.dependOn(&run_nsm_validation_tests.step);
 }

@@ -192,7 +192,7 @@ pub fn loadNFC(allocator: std.mem.Allocator) !nfc.NFCData {
 }
 
 /// Load emoji data from ZON
-pub fn loadEmoji(allocator: std.mem.Allocator) !emoji_mod.EmojiData {
+pub fn loadEmoji(allocator: std.mem.Allocator) !emoji_mod.EmojiMap {
     const zon_data = @embedFile("data/spec.zon");
     
     const parsed = try std.json.parseFromSlice(
@@ -215,7 +215,19 @@ pub fn loadEmoji(allocator: std.mem.Allocator) !emoji_mod.EmojiData {
             for (seq_array, 0..) |cp_value, i| {
                 cps[i] = @as(CodePoint, @intCast(cp_value.integer));
             }
-            try emoji_data.sequences.append(cps);
+            
+            // Create EmojiData with both emoji and no_fe0f versions
+            const emoji_entry = emoji_mod.EmojiData{
+                .emoji = cps,
+                .no_fe0f = try allocator.dupe(CodePoint, cps), // For now, same as emoji
+            };
+            
+            try emoji_data.all_emojis.append(emoji_entry);
+            
+            // Update max length
+            if (cps.len > emoji_data.max_length) {
+                emoji_data.max_length = cps.len;
+            }
         }
     }
     

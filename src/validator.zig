@@ -8,6 +8,7 @@ const character_mappings = @import("character_mappings.zig");
 const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
 const combining_marks = @import("combining_marks.zig");
+const nsm_validation = @import("nsm_validation.zig");
 
 // Type definitions
 pub const CodePoint = u32;
@@ -36,6 +37,12 @@ pub const ValidationError = error{
     WholeScriptConfusable,
     DuplicateNSM,
     ExcessiveNSM,
+    LeadingNSM,
+    NSMAfterEmoji,
+    NSMAfterFenced,
+    InvalidNSMBase,
+    NSMOrderError,
+    DisallowedNSMScript,
     OutOfMemory,
     InvalidUtf8,
 };
@@ -224,8 +231,19 @@ pub fn validateLabel(
     // Step 8: Check combining marks with script group validation
     try combining_marks.validateCombiningMarks(cps, script_group, allocator);
     
-    // Step 9: Check non-spacing marks
-    try checkNonSpacingMarks(allocator, cps, &groups);
+    // Step 9: Check non-spacing marks with comprehensive validation
+    nsm_validation.validateNSM(cps, &groups, script_group, allocator) catch |err| {
+        switch (err) {
+            nsm_validation.NSMValidationError.ExcessiveNSM => return ValidationError.ExcessiveNSM,
+            nsm_validation.NSMValidationError.DuplicateNSM => return ValidationError.DuplicateNSM,
+            nsm_validation.NSMValidationError.LeadingNSM => return ValidationError.LeadingNSM,
+            nsm_validation.NSMValidationError.NSMAfterEmoji => return ValidationError.NSMAfterEmoji,
+            nsm_validation.NSMValidationError.NSMAfterFenced => return ValidationError.NSMAfterFenced,
+            nsm_validation.NSMValidationError.InvalidNSMBase => return ValidationError.InvalidNSMBase,
+            nsm_validation.NSMValidationError.NSMOrderError => return ValidationError.NSMOrderError,
+            nsm_validation.NSMValidationError.DisallowedNSMScript => return ValidationError.DisallowedNSMScript,
+        }
+    };
     
     // Step 10: Check for whole-script confusables
     var confusable_data = try static_data_loader.loadConfusables(allocator);
@@ -424,38 +442,8 @@ fn checkFencedCharactersHardcoded(cps: []const CodePoint) ValidationError!void {
 
 // This function is now replaced by combining_marks.validateCombiningMarks
 
-fn checkNonSpacingMarks(allocator: std.mem.Allocator, cps: []const CodePoint, groups: *const script_groups.ScriptGroups) ValidationError!void {
-    _ = allocator; // TODO: Use for NFD normalization
-    if (cps.len == 0) return;
-    
-    // TODO: Implement full Unicode NFD normalization for proper NSM checking
-    // For now, simplified check
-    
-    var nsm_count: usize = 0;
-    var prev_nsm: ?CodePoint = null;
-    
-    for (cps) |cp| {
-        if (groups.isNSM(cp)) {
-            nsm_count += 1;
-            
-            // Check for excessive NSM
-            if (nsm_count > groups.nsm_max) {
-                return ValidationError.ExcessiveNSM;
-            }
-            
-            // Check for duplicate NSM
-            if (prev_nsm != null and prev_nsm.? == cp) {
-                return ValidationError.DuplicateNSM;
-            }
-            
-            prev_nsm = cp;
-        } else {
-            // Reset count for new base character
-            nsm_count = 0;
-            prev_nsm = null;
-        }
-    }
-}
+// This function is now replaced by nsm_validation.validateNSM
+// which provides comprehensive NSM validation following ENSIP-15
 
 // Test helper functions
 pub fn codePointsFromString(allocator: std.mem.Allocator, input: []const u8) ![]CodePoint {

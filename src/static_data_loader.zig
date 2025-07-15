@@ -20,7 +20,7 @@ pub fn loadNFC(allocator: std.mem.Allocator) !nfc.NFCData {
 }
 
 /// Load emoji data from ZON
-pub fn loadEmoji(allocator: std.mem.Allocator) !emoji.EmojiData {
+pub fn loadEmoji(allocator: std.mem.Allocator) !emoji.EmojiMap {
     return zon_loader.loadEmoji(allocator);
 }
 

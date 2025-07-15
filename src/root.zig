@@ -23,6 +23,7 @@ pub const nfc = @import("nfc.zig");
 pub const emoji = @import("emoji.zig");
 pub const script_groups = @import("script_groups.zig");
 pub const combining_marks = @import("combining_marks.zig");
+pub const nsm_validation = @import("nsm_validation.zig");
 
 // Re-export main API
 pub const EnsNameNormalizer = normalizer.EnsNameNormalizer;
