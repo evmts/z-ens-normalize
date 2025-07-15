@@ -56,11 +56,25 @@ pub fn isAscii(cp: CodePoint) bool {
     return cp <= LAST_ASCII_CP;
 }
 
-// Note: For NFC/NFD normalization, we would need to implement Unicode normalization
-// For now, these are placeholder functions that would need proper implementation
+// NFC normalization using our implementation
 pub fn nfc(allocator: std.mem.Allocator, str: []const u8) ![]u8 {
-    // This is a placeholder - would need proper Unicode NFC implementation
-    return allocator.dupe(u8, str);
+    const nfc_mod = @import("nfc.zig");
+    const static_data_loader = @import("static_data_loader.zig");
+    
+    // Convert string to codepoints
+    const cps = try str2cps(allocator, str);
+    defer allocator.free(cps);
+    
+    // Load NFC data
+    var nfc_data = try static_data_loader.loadNFCData(allocator);
+    defer nfc_data.deinit();
+    
+    // Apply NFC normalization
+    const normalized_cps = try nfc_mod.nfc(allocator, cps, &nfc_data);
+    defer allocator.free(normalized_cps);
+    
+    // Convert back to string
+    return cps2str(allocator, normalized_cps);
 }
 
 pub fn nfdCps(allocator: std.mem.Allocator, cps: []const CodePoint, specs: anytype) ![]CodePoint {
