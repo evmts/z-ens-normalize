@@ -634,3 +634,67 @@ The implementation includes comprehensive test coverage:
 4. **Performance Focus**: Optimized for common use cases
 
 This tokenization implementation provides a solid foundation for the complete ENS normalization system, with excellent performance characteristics and comprehensive test coverage.
+
+### **Fuzz Testing Coverage**
+
+The implementation includes comprehensive fuzz testing (`tests/tokenization_fuzz.zig`) to ensure robustness against malformed inputs:
+
+#### **Fuzz Test Categories**
+
+1. **UTF-8 Boundary Testing**
+   - All single bytes (0x00-0xFF)
+   - Invalid UTF-8 sequences (overlong encodings, surrogates)
+   - Continuation bytes without start bytes
+
+2. **Unicode Plane Testing**
+   - Boundary code points from all Unicode planes
+   - Maximum valid code point (0x10FFFF)
+   - Non-characters and replacement characters
+
+3. **Emoji Sequence Testing**
+   - Complex emoji with ZWJ sequences
+   - Skin tone modifiers and variation selectors
+   - Regional indicator sequences
+
+4. **Length Stress Testing**
+   - Inputs from 0 to 10,000 characters
+   - Repeated patterns of different character types
+   - Performance validation (must complete within 1 second)
+
+5. **Mixed Input Testing**
+   - Rapid switching between character types
+   - Edge cases like consecutive separators
+   - Unicode normalization interactions
+
+6. **Pathological Input Testing**
+   - Empty strings and single characters
+   - Characters at classification boundaries
+   - Maximum and minimum code points
+
+7. **Random Input Testing**
+   - 100 random inputs of varying lengths
+   - Purely random byte sequences
+   - Validation of no crashes on any input
+
+#### **Fuzz Test Results**
+
+```
+✅ All fuzz tests pass without crashes
+✅ Handles malformed UTF-8 gracefully
+✅ Processes all Unicode planes correctly
+✅ Validates memory safety under stress
+✅ Maintains performance under load
+✅ Proper error handling for edge cases
+```
+
+#### **Usage**
+
+```bash
+# Run fuzz tests
+zig build fuzz
+
+# Run all tests including fuzz tests
+zig build test && zig build fuzz
+```
+
+This comprehensive fuzz testing ensures the tokenization implementation is robust enough for production use in security-critical ENS normalization scenarios.

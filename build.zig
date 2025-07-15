@@ -127,6 +127,16 @@ pub fn build(b: *std.Build) void {
     
     const run_tokenization_tests = b.addRunArtifact(tokenization_tests);
     
+    // Add tokenization fuzz tests
+    const tokenization_fuzz_tests = b.addTest(.{
+        .root_source_file = b.path("tests/tokenization_fuzz.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tokenization_fuzz_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_tokenization_fuzz_tests = b.addRunArtifact(tokenization_fuzz_tests);
+    
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
@@ -135,4 +145,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_tokenization_tests.step);
+    
+    // Add separate fuzz test step
+    const fuzz_step = b.step("fuzz", "Run fuzz tests");
+    fuzz_step.dependOn(&run_tokenization_fuzz_tests.step);
 }
