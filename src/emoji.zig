@@ -54,7 +54,7 @@ pub const EmojiMap = struct {
     
     /// Add an emoji sequence to the map
     pub fn addEmoji(self: *EmojiMap, no_fe0f: []const CodePoint, canonical: []const CodePoint) !void {
-        log.trace("Adding emoji: no_fe0f.len={}, canonical.len={}", .{no_fe0f.len, canonical.len});
+        // log.trace("Adding emoji: no_fe0f.len={}, canonical.len={}", .{no_fe0f.len, canonical.len});
         
         // Create owned copies
         const owned_no_fe0f = try self.allocator.dupe(CodePoint, no_fe0f);
@@ -72,7 +72,7 @@ pub const EmojiMap = struct {
         const key = try utils.cps2str(self.allocator, no_fe0f);
         defer self.allocator.free(key);
         
-        log.debug("Added emoji with key length {} bytes", .{key.len});
+        // log.debug("Added emoji with key length {} bytes", .{key.len});
         
         // Add to map with owned key
         const owned_key = try self.allocator.dupe(u8, key);
