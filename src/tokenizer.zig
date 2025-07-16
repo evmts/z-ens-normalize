@@ -9,17 +9,22 @@ const character_mappings = @import("character_mappings.zig");
 const static_data_loader = @import("static_data_loader.zig");
 const nfc = @import("nfc.zig");
 const emoji = @import("emoji.zig");
+const log = @import("logger.zig");
 
 pub const OutputToken = struct {
     codepoints: []const CodePoint,
     emoji: ?*const emoji.EmojiData,  // Optional emoji reference
     allocator: std.mem.Allocator,
+    type: TokenType,
     
     pub fn init(allocator: std.mem.Allocator, codepoints: []const CodePoint, emoji_data: ?*const emoji.EmojiData) !OutputToken {
+        const token_type: TokenType = if (emoji_data != null) .emoji else .valid;
+        log.trace("Creating OutputToken: type={s}, codepoints.len={}, emoji={}", .{@tagName(token_type), codepoints.len, emoji_data != null});
         return OutputToken{
             .codepoints = try allocator.dupe(CodePoint, codepoints),
             .emoji = emoji_data,
             .allocator = allocator,
+            .type = token_type,
         };
     }
     
@@ -385,6 +390,11 @@ pub fn streamingTokenize(
     nfc_data: *const nfc.NFCData,
     apply_nfc: bool,
 ) ![]OutputToken {
+    log.enterFn("streamingTokenize", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+    log.unicodeDebug("Input to tokenize", input);
+    const timer = log.Timer.start("streamingTokenize");
+    defer timer.stop();
+    
     var tokens = std.ArrayList(OutputToken).init(allocator);
     errdefer tokens.deinit(); // Only free on error
     
@@ -402,18 +412,24 @@ pub fn streamingTokenize(
         ) !void {
             if (buffer.items.len == 0) return;
             
+            log.trace("Flushing text buffer: {} codepoints", .{buffer.items.len});
             var codepoints = buffer.items;
             
             // Apply NFC if requested
             if (should_apply_nfc) {
+                log.trace("Applying NFC to {} codepoints", .{buffer.items.len});
                 codepoints = nfc.nfc(alloc, buffer.items, nfc_data_ref) catch |err| {
-                    std.debug.print("streamingTokenize: NFC failed with error: {}\n", .{err});
+                    log.err("NFC failed with error: {}", .{err});
                     return; // Can't continue if NFC fails
                 };
+                if (codepoints.len != buffer.items.len) {
+                    log.debug("NFC transformed {} codepoints to {} codepoints", .{buffer.items.len, codepoints.len});
+                }
             }
             
             const token = try OutputToken.init(alloc, codepoints, null);
             try token_list.append(token);
+            log.trace("Added text token with {} codepoints", .{codepoints.len});
             
             // Free NFC result if it was allocated
             if (should_apply_nfc and codepoints.ptr != buffer.items.ptr) {
@@ -429,12 +445,15 @@ pub fn streamingTokenize(
     while (i < input.len) {
         // Try to match emoji at current position
         if (emoji_map.findEmojiAt(allocator, input, i)) |emoji_match| {
+            log.trace("Found emoji at position {}: {} codepoints, {} bytes", .{i, emoji_match.emoji_data.emoji.len, emoji_match.byte_len});
+            
             // Flush accumulated text buffer
             try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
             
             // Add emoji token
             const emoji_token = try OutputToken.init(allocator, emoji_match.emoji_data.no_fe0f, &emoji_match.emoji_data);
             try tokens.append(emoji_token);
+            log.debug("Added emoji token with {} codepoints", .{emoji_match.emoji_data.emoji.len});
             
             i += emoji_match.byte_len;
             continue;
@@ -447,26 +466,34 @@ pub fn streamingTokenize(
         const cp_bytes = input[i..i + char_len];
         const cp = std.unicode.utf8Decode(cp_bytes) catch {
             // Invalid UTF-8, add replacement character to buffer
+            log.warn("Invalid UTF-8 at position {}, using replacement character", .{i});
             try text_buffer.append(0xFFFD);
             i += 1;
             continue;
         };
         
+        log.trace("Processing character at position {}: U+{X:0>4}", .{i, cp});
+        
         // Classify character and handle accordingly
         if (cp == constants.CP_STOP) {
+            log.debug("Found STOP character (.) at position {}", .{i});
             // Flush text buffer and add stop character as separate token
             try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
             const stop_token = try OutputToken.init(allocator, &[_]CodePoint{cp}, null);
             try tokens.append(stop_token);
         } else if (mappings.isIgnored(cp)) {
+            log.trace("Character U+{X:0>4} is ignored", .{cp});
             // Ignored characters are not added to buffer
         } else if (mappings.getMapped(cp)) |mapped| {
+            log.trace("Character U+{X:0>4} maps to {} codepoints", .{cp, mapped.len});
             // Add mapped codepoints to buffer
             try text_buffer.appendSlice(mapped);
         } else if (mappings.isValid(cp)) {
+            log.trace("Character U+{X:0>4} is valid", .{cp});
             // Add valid character to buffer
             try text_buffer.append(cp);
         } else {
+            log.warn("Character U+{X:0>4} is disallowed but adding to buffer for validation", .{cp});
             // Disallowed character - for now, add to buffer (validation will catch it)
             try text_buffer.append(cp);
         }
@@ -475,9 +502,12 @@ pub fn streamingTokenize(
     }
     
     // Flush any remaining text in buffer
+    log.trace("Flushing final text buffer", .{});
     try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
     
-    return tokens.toOwnedSlice();
+    const result = try tokens.toOwnedSlice();
+    log.exitFn("streamingTokenize", "tokens.len={}", .{result.len});
+    return result;
 }
 
 pub const StreamTokenizedName = struct {
@@ -514,7 +544,11 @@ pub const StreamTokenizedName = struct {
         nfc_data: *const nfc.NFCData,
         apply_nfc: bool,
     ) !StreamTokenizedName {
+        log.enterFn("StreamTokenizedName.fromInputWithData", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+        log.unicodeDebug("Creating StreamTokenizedName for input", input);
+        
         if (input.len == 0) {
+            log.debug("Empty input, returning empty token list", .{});
             return StreamTokenizedName{
                 .input = try allocator.dupe(u8, ""),
                 .tokens = &[_]OutputToken{},
@@ -523,12 +557,20 @@ pub const StreamTokenizedName = struct {
         }
         
         const tokens = try streamingTokenize(allocator, input, mappings, emoji_map, nfc_data, apply_nfc);
+        log.info("Tokenization complete: {} tokens generated", .{tokens.len});
         
-        return StreamTokenizedName{
+        for (tokens, 0..) |token, i| {
+            log.debug("Token[{}]: type={s}, codepoints.len={}, emoji={}", .{i, @tagName(token.type), token.codepoints.len, token.emoji != null});
+        }
+        
+        const result = StreamTokenizedName{
             .input = try allocator.dupe(u8, input),
             .tokens = tokens,
             .allocator = allocator,
         };
+        
+        log.exitFn("StreamTokenizedName.fromInputWithData", "tokens.len={}", .{result.tokens.len});
+        return result;
     }
 };
 
@@ -538,10 +580,12 @@ fn tokenizeInputWithMappings(
     input: []const u8,
     apply_nfc: bool,
 ) ![]Token {
+    log.enterFn("tokenizeInputWithMappings", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+    
     // Load complete character mappings from spec.zon
     var mappings = static_data_loader.loadCharacterMappings(allocator) catch |err| blk: {
         // Fall back to basic mappings if spec.zon loading fails
-        std.debug.print("Warning: Failed to load spec.zon: {}, using basic mappings\n", .{err});
+        log.warn("Failed to load spec.zon: {}, using basic mappings", .{err});
         break :blk try static_data_loader.loadCharacterMappings(allocator);
     };
     defer mappings.deinit();
@@ -555,6 +599,9 @@ fn tokenizeInputWithMappingsImpl(
     mappings: *const character_mappings.CharacterMappings,
     apply_nfc: bool,
 ) ![]Token {
+    log.enterFn("tokenizeInputWithMappingsImpl", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+    log.unicodeDebug("Tokenizing input", input);
+    
     var tokens = std.ArrayList(Token).init(allocator);
     errdefer tokens.deinit(); // Only free on error
     
@@ -628,6 +675,11 @@ fn tokenizeInputWithMappingsImplWithData(
     nfc_data: *const nfc.NFCData,
     apply_nfc: bool,
 ) ![]Token {
+    log.enterFn("tokenizeInputWithMappingsImplWithData", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+    log.unicodeDebug("Tokenizing with full data", input);
+    const timer = log.Timer.start("tokenizeInputWithMappingsImplWithData");
+    defer timer.stop();
+    
     var tokens = std.ArrayList(Token).init(allocator);
     errdefer tokens.deinit(); // Only free on error
     
@@ -919,11 +971,14 @@ fn tokenizeWithoutEmoji(
     mappings: *const character_mappings.CharacterMappings,
     apply_nfc: bool,
 ) ![]Token {
+    log.enterFn("tokenizeWithoutEmoji", "input.len={}, apply_nfc={}", .{input.len, apply_nfc});
+    
     var tokens = std.ArrayList(Token).init(allocator);
     errdefer tokens.deinit(); // Only free on error
     
     // Convert input to code points
     const cps = try utils.str2cps(allocator, input);
+    log.debug("Converted input to {} codepoints", .{cps.len});
     defer allocator.free(cps);
     
     for (cps) |cp| {
