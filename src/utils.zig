@@ -8,7 +8,7 @@ const LAST_ASCII_CP: CodePoint = 0x7f;
 
 pub fn filterFe0f(allocator: std.mem.Allocator, cps: []const CodePoint) ![]CodePoint {
     var result = std.ArrayList(CodePoint).init(allocator);
-    defer result.deinit();
+    errdefer result.deinit(); // Only free on error
     
     for (cps) |cp| {
         if (cp != FE0F) {
@@ -21,7 +21,7 @@ pub fn filterFe0f(allocator: std.mem.Allocator, cps: []const CodePoint) ![]CodeP
 
 pub fn cps2str(allocator: std.mem.Allocator, cps: []const CodePoint) ![]u8 {
     var result = std.ArrayList(u8).init(allocator);
-    defer result.deinit();
+    errdefer result.deinit(); // Only free on error
     
     for (cps) |cp| {
         if (cp <= 0x10FFFF) {
@@ -40,7 +40,7 @@ pub fn cp2str(allocator: std.mem.Allocator, cp: CodePoint) ![]u8 {
 
 pub fn str2cps(allocator: std.mem.Allocator, str: []const u8) ![]CodePoint {
     var result = std.ArrayList(CodePoint).init(allocator);
-    defer result.deinit();
+    errdefer result.deinit(); // Only free on error
     
     const utf8_view = std.unicode.Utf8View.init(str) catch return error.InvalidUtf8;
     var iter = utf8_view.iterator();
@@ -79,7 +79,7 @@ pub fn nfc(allocator: std.mem.Allocator, str: []const u8) ![]u8 {
 
 pub fn nfdCps(allocator: std.mem.Allocator, cps: []const CodePoint, specs: anytype) ![]CodePoint {
     var result = std.ArrayList(CodePoint).init(allocator);
-    defer result.deinit();
+    errdefer result.deinit(); // Only free on error
     
     for (cps) |cp| {
         if (specs.decompose(cp)) |decomposed| {
