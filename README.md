@@ -171,10 +171,31 @@ zig build -Doptimize=Debug
 - [x] Normalization
 - [x] Beautification
 - [x] ENSIP-15 Validation Tests
+- [x] NSM (Non-Spacing Mark) Validation
+- [x] Combining Marks Validation
+- [x] Basic Confusable Detection
+- [ ] **Trie-based Emoji Matching** - See [design doc](prompts/trie.md) for implementation plan
 - [ ] Unicode Normalization Tests
+- [ ] Fenced Character Validation
+- [ ] Enhanced Error Types (matching Java reference)
 - [ ] CLI to update `specs.json` and `nf.json`
 - [ ] analog of [ens_cure](https://github.com/namehash/ens-normalize-python?tab=readme-ov-file#ens_cure) function
 - [ ] analog of [ens_normalizations](https://github.com/namehash/ens-normalize-python/tree/main?tab=readme-ov-file#ens_normalizations) function
+
+## TODO
+
+### High Priority
+- **Trie-based Emoji Matching**: Replace current O(n²) hash map emoji matching with O(n) trie-based approach following Java reference implementation. See [detailed design document](prompts/trie.md) for:
+  - Complete implementation plan with Zig code examples
+  - Performance analysis and benchmarking strategy
+  - Comprehensive fuzz testing approach
+  - Test cases extracted from Java reference implementation
+  - Memory safety considerations and migration strategy
+
+### Medium Priority
+- **Enhanced Error Types**: Add specific error types matching Java reference (NSM_DUPLICATE, CM_AFTER_EMOJI, etc.)
+- **Fenced Character Validation**: Complete implementation of fenced character detection and validation
+- **Performance Optimization**: Memory pool allocation for frequently allocated structures
 
 ## License
 

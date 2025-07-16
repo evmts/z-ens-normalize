@@ -287,6 +287,16 @@ pub fn build(b: *std.Build) void {
     
     const run_nsm_validation_tests = b.addRunArtifact(nsm_validation_tests);
     
+    // Add script group validation tests
+    const script_group_validation_tests = b.addTest(.{
+        .root_source_file = b.path("tests/script_group_validation_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    script_group_validation_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_script_group_validation_tests = b.addRunArtifact(script_group_validation_tests);
+    
     const official_test_vectors = b.addTest(.{
         .root_source_file = b.path("tests/official_test_vectors.zig"),
         .target = target,
@@ -421,6 +431,7 @@ pub fn build(b: *std.Build) void {
     // TODO: Re-enable these tests after fixing NSM/combining mark validation crashes
     // test_step.dependOn(&run_combining_mark_tests.step);
     test_step.dependOn(&run_nsm_validation_tests.step);
+    test_step.dependOn(&run_script_group_validation_tests.step);
     test_step.dependOn(&run_official_test_vectors.step);
     test_step.dependOn(&run_character_classification_tests.step);
     test_step.dependOn(&run_nfc_normalization_tests.step);
