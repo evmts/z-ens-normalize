@@ -158,7 +158,7 @@ pub const ProcessedName = struct {
     }
     
     pub fn beautify(self: *const ProcessedName) ![]u8 {
-        return beautifyStreamTokens(self.allocator, self.tokenized.tokens);
+        return beautifyProcessedName(self.allocator, self.labels, self.tokenized.tokens);
     }
 };
 
@@ -170,6 +170,13 @@ fn normalizeStreamTokens(allocator: std.mem.Allocator, token_list: []const token
     
     for (token_list, 0..) |token, i| {
         log.trace("Processing token {}: type={s}, codepoints.len={}", .{i, @tagName(token.type), token.codepoints.len});
+        
+        // Handle stop tokens (dots) specially
+        if (token.type == .stop) {
+            log.trace("  Adding stop character (dot)", .{});
+            try result.append('.');
+            continue;
+        }
         
         // Convert codepoints to UTF-8 and append to result
         for (token.codepoints) |cp| {
@@ -192,12 +199,32 @@ fn normalizeStreamTokens(allocator: std.mem.Allocator, token_list: []const token
     return output;
 }
 
-fn beautifyStreamTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.OutputToken) ![]u8 {
-    log.enterFn("beautifyStreamTokens", "token_list.len={}", .{token_list.len});
+fn beautifyProcessedName(allocator: std.mem.Allocator, labels: []const validate.ValidatedLabel, token_list: []const tokenizer.OutputToken) ![]u8 {
+    log.enterFn("beautifyProcessedName", "labels.len={}, token_list.len={}", .{labels.len, token_list.len});
     var result = std.ArrayList(u8).init(allocator);
     defer result.deinit();
     
+    // We need to track which label we're in as we process tokens
+    var current_label_idx: usize = 0;
+    var tokens_in_current_label: usize = 0;
+    
     for (token_list, 0..) |token, i| {
+        // Handle stop tokens (dots)
+        if (token.type == .stop) {
+            if (result.items.len > 0) {
+                try result.append('.');
+            }
+            // Move to next label
+            if (current_label_idx < labels.len) {
+                current_label_idx += 1;
+                tokens_in_current_label = 0;
+            }
+            continue;
+        }
+        
+        // Get the current label type
+        const label_type = if (current_label_idx < labels.len) labels[current_label_idx].label_type else validate.LabelType.ascii;
+        
         if (token.isEmoji()) {
             // For emoji, use fully-qualified form with FE0F
             const emoji_cps = token.emoji.?.emoji;
@@ -217,10 +244,18 @@ fn beautifyStreamTokens(allocator: std.mem.Allocator, token_list: []const tokeni
                 };
             }
         } else {
-            // For text, use normalized form
-            log.trace("Processing text token {}: type={s}, {} codepoints", .{i, @tagName(token.type), token.codepoints.len});
+            // For text, apply beautification rules
+            log.trace("Processing text token {}: type={s}, {} codepoints, label_type={s}", .{i, @tagName(token.type), token.codepoints.len, @tagName(label_type)});
             
-            for (token.codepoints) |cp| {
+            for (token.codepoints) |cp_orig| {
+                var cp = cp_orig;
+                
+                // Apply Greek character replacement: ξ (0x3BE) => Ξ (0x39E) if not Greek label
+                if (label_type != .greek and cp == root.constants.CP_XI_SMALL) {
+                    cp = root.constants.CP_XI_CAPITAL;
+                    log.debug("  Replacing ξ (U+{X:0>4}) with Ξ (U+{X:0>4}) for non-Greek label", .{root.constants.CP_XI_SMALL, root.constants.CP_XI_CAPITAL});
+                }
+                
                 log.trace("  Encoding text codepoint U+{X:0>4}", .{cp});
                 const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch {
                     log.warn("Invalid text codepoint U+{X:0>4}, skipping", .{cp});
@@ -234,10 +269,12 @@ fn beautifyStreamTokens(allocator: std.mem.Allocator, token_list: []const tokeni
                 };
             }
         }
+        
+        tokens_in_current_label += 1;
     }
     
     const output = try result.toOwnedSlice();
-    log.exitFn("beautifyStreamTokens", "output.len={}", .{output.len});
+    log.exitFn("beautifyProcessedName", "output.len={}", .{output.len});
     return output;
 }
 
