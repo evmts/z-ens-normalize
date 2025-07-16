@@ -48,6 +48,51 @@ Before implementing ANY feature:
 1. **Incomplete Mappings**: References map ℌ→h directly, not ℌ→H→h
 2. **Missing Edge Cases**: Every character the references handle must be handled
 3. **Wrong Assumptions**: Don't assume ASCII folding is separate from Unicode mappings
+
+## ⚠️ **CRITICAL MEMORY MANAGEMENT RULES**
+
+### **ArrayList + toOwnedSlice() Pattern - EXTREMELY DANGEROUS**
+
+**NEVER do this:**
+```zig
+var list = std.ArrayList(T).init(allocator);
+defer list.deinit(); // ❌ BUG: Creates double-free!
+// ... add items to list ...
+return list.toOwnedSlice(); // Transfers ownership, then defer tries to free again
+```
+
+**CORRECT patterns:**
+
+**Option 1 - No defer, handle errors manually:**
+```zig
+var list = std.ArrayList(T).init(allocator);
+errdefer list.deinit(); // Only free on error
+// ... add items to list ...
+return list.toOwnedSlice(); // Transfer ownership on success
+```
+
+**Option 2 - Use defer with careful ownership:**
+```zig
+var list = std.ArrayList(T).init(allocator);
+defer list.deinit();
+// ... add items to list ...
+const result = try list.toOwnedSlice();
+list = std.ArrayList(T).init(allocator); // Reset to empty so deinit is safe
+return result;
+```
+
+### **Why This Matters:**
+- `toOwnedSlice()` transfers ownership of internal buffer to caller
+- `defer deinit()` then tries to free the SAME buffer
+- Results in double-free bugs, bus errors, memory corruption
+- Can cause mysterious crashes, segfaults, data corruption
+
+### **Memory Management Checklist:**
+- [ ] Every `allocator.alloc()` has corresponding `allocator.free()`
+- [ ] Every `allocator.dupe()` has corresponding `allocator.free()`
+- [ ] Never call `deinit()` after `toOwnedSlice()` on same ArrayList
+- [ ] Use `errdefer` for cleanup on error paths
+- [ ] Test with allocation failure modes (if possible)
 4. **Incomplete Testing**: Test with actual ENS names from production, not just simple cases
 
 ## 🛠️ Debugging Process
