@@ -11,6 +11,7 @@ const confusables = @import("confusables.zig");
 const log = @import("logger.zig");
 const static_data_loader = @import("static_data_loader.zig");
 const nfc = @import("nfc.zig");
+const nsm_validation = @import("nsm_validation.zig");
 
 pub const LabelType = union(enum) {
     ascii,
@@ -485,6 +486,7 @@ fn isCombiningMark(cp: CodePoint) bool {
 
 fn checkNonSpacingMarks(allocator: std.mem.Allocator, label: TokenizedLabel, specs: *const code_points.CodePointsSpecs, script_groups_data: *const script_groups.ScriptGroups) !void {
     _ = specs; // Not used in this function
+    
     // Get all codepoints and apply NFD decomposition
     const cps = try label.iterCps(allocator);
     defer allocator.free(cps);
@@ -497,40 +499,47 @@ fn checkNonSpacingMarks(allocator: std.mem.Allocator, label: TokenizedLabel, spe
     const nfd_cps = try nfc.decompose(allocator, cps, &nfc_data);
     defer allocator.free(nfd_cps);
     
-    // Maximum allowed consecutive non-spacing marks (from C# reference)
-    const MAX_NON_SPACING_MARKS = 4;
+    // Determine the script group for the label
+    const script_group = try determineScriptGroup(allocator, label, script_groups_data);
     
-    // Iterate through decomposed codepoints
-    var i: usize = 1; // Start from 1 as per C# implementation
-    while (i < nfd_cps.len) : (i += 1) {
-        // Check if this is a non-spacing mark
-        if (script_groups_data.isNSM(nfd_cps[i])) {
-            const start_i = i;
-            var j = i + 1;
-            
-            // Find consecutive NSMs
-            while (j < nfd_cps.len and script_groups_data.isNSM(nfd_cps[j])) : (j += 1) {
-                // Check for duplicate NSMs
-                var k = start_i;
-                while (k < j) : (k += 1) {
-                    if (nfd_cps[k] == nfd_cps[j]) {
-                        log.err("Duplicate non-spacing mark found: U+{X:0>4}", .{nfd_cps[j]});
-                        return error_types.ProcessError.DisallowedSequence;
-                    }
-                }
-            }
-            
-            // Check if we have too many consecutive NSMs
-            const nsm_count = j - start_i;
-            if (nsm_count > MAX_NON_SPACING_MARKS) {
-                log.err("Excessive non-spacing marks: {} (max allowed: {})", .{nsm_count, MAX_NON_SPACING_MARKS});
+    // Use the comprehensive NSM validation
+    nsm_validation.validateNSM(nfd_cps, script_groups_data, script_group, allocator) catch |err| {
+        switch (err) {
+            nsm_validation.NSMValidationError.ExcessiveNSM => {
+                log.err("Excessive non-spacing marks found", .{});
                 return error_types.ProcessError.DisallowedSequence;
-            }
-            
-            // Update i to continue after the NSM sequence
-            i = j - 1; // -1 because loop will increment
+            },
+            nsm_validation.NSMValidationError.DuplicateNSM => {
+                log.err("Duplicate non-spacing mark found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.LeadingNSM => {
+                log.err("Leading non-spacing mark found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.NSMAfterEmoji => {
+                log.err("Non-spacing mark after emoji found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.NSMAfterFenced => {
+                log.err("Non-spacing mark after fenced character found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.InvalidNSMBase => {
+                log.err("Invalid base character for non-spacing mark", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.NSMOrderError => {
+                log.err("Non-spacing marks not in canonical order", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            nsm_validation.NSMValidationError.DisallowedNSMScript => {
+                log.err("Non-spacing mark from wrong script group", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            },
+            else => return err,
         }
-    }
+    };
 }
 
 /// Determine the script type of a label
@@ -587,7 +596,7 @@ fn determineScriptGroup(allocator: std.mem.Allocator, label: TokenizedLabel, scr
     }
     
     // Remove duplicates
-    var unique_set = std.HashMap(CodePoint, void, std.hash_map.DefaultContext(CodePoint), std.hash_map.default_max_load_percentage).init(allocator);
+    var unique_set = std.AutoHashMap(CodePoint, void).init(allocator);
     defer unique_set.deinit();
     
     for (unique_cps) |cp| {
@@ -637,7 +646,7 @@ fn checkWholeScriptConfusables(allocator: std.mem.Allocator, label: TokenizedLab
             if (containing_group != group) {
                 // This codepoint belongs to a different script group
                 // Check if it's confusable with the primary group
-                log.err("Character U+{X:0>4} belongs to script '{}' but expected '{}'", .{cp, containing_group.name, group.name});
+                log.err("Character U+{X:0>4} belongs to script '{s}' but expected '{s}'", .{cp, containing_group.name, group.name});
                 return error_types.ProcessError.Confused;
             }
         }
@@ -646,7 +655,7 @@ fn checkWholeScriptConfusables(allocator: std.mem.Allocator, label: TokenizedLab
     // Additional check: ensure all codepoints are actually valid in the determined group
     for (unique_cps) |cp| {
         if (!group.containsCp(cp)) {
-            log.err("Character U+{X:0>4} not allowed in script '{}'", .{cp, group.name});
+            log.err("Character U+{X:0>4} not allowed in script '{s}'", .{cp, group.name});
             return error_types.ProcessError.Confused;
         }
     }
