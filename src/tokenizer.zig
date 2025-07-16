@@ -10,12 +10,6 @@ const static_data_loader = @import("static_data_loader.zig");
 const nfc = @import("nfc.zig");
 const emoji = @import("emoji.zig");
 
-// Token types based on ENSIP-15 specification
-// Note: Unlike some implementations, our tokenizer can return errors for memory allocation
-// failures. The reference JavaScript implementation never throws, but in Zig we need to
-// handle allocation failures properly.
-// Simplified output token following reference implementation patterns
-// Based on Go implementation's OutputToken structure
 pub const OutputToken = struct {
     codepoints: []const CodePoint,
     emoji: ?*const emoji.EmojiData,  // Optional emoji reference
@@ -42,8 +36,6 @@ pub const OutputToken = struct {
     }
 };
 
-// Legacy token types for backward compatibility during transition
-// TODO: Remove after TASK 2 is complete
 pub const TokenType = enum {
     valid,
     mapped,
@@ -84,15 +76,15 @@ pub const Token = struct {
             cp: CodePoint,
         },
         emoji: struct {
-            input: []const CodePoint,  // Changed from []const u8 to match reference
-            emoji_data: []const CodePoint,   // fully-qualified emoji
-            cps: []const CodePoint,     // output (fe0f filtered) - renamed from cps_no_fe0f
+            input: []const CodePoint,
+            emoji_data: []const CodePoint,
+            cps: []const CodePoint,
         },
         nfc: struct {
             input: []const CodePoint,
             cps: []const CodePoint,
-            tokens0: ?[]Token,          // tokens before NFC (optional)
-            tokens: ?[]Token,           // tokens after NFC (optional)
+            tokens0: ?[]Token,
+            tokens: ?[]Token,
         },
         stop: struct {
             cp: CodePoint,
@@ -235,14 +227,30 @@ pub const Token = struct {
         allocator: std.mem.Allocator,
         input: []const CodePoint,
         emoji_data: []const CodePoint,
-        cps: []const CodePoint  // fe0f filtered
+        cps: []const CodePoint
     ) !Token {
+        const input_copy = try allocator.dupe(CodePoint, input);
+        errdefer allocator.free(input_copy);
+        
+        const emoji_copy = if (emoji_data.ptr == input.ptr and emoji_data.len == input.len) 
+            try allocator.dupe(CodePoint, input_copy)
+        else 
+            try allocator.dupe(CodePoint, emoji_data);
+        errdefer allocator.free(emoji_copy);
+        
+        const cps_copy = if (cps.ptr == input.ptr and cps.len == input.len)
+            try allocator.dupe(CodePoint, input_copy)
+        else if (cps.ptr == emoji_data.ptr and cps.len == emoji_data.len)
+            try allocator.dupe(CodePoint, emoji_copy)
+        else
+            try allocator.dupe(CodePoint, cps);
+        
         return Token{
             .type = .emoji,
             .data = .{ .emoji = .{
-                .input = try allocator.dupe(CodePoint, input),
-                .emoji_data = try allocator.dupe(CodePoint, emoji_data),
-                .cps = try allocator.dupe(CodePoint, cps),
+                .input = input_copy,
+                .emoji_data = emoji_copy,
+                .cps = cps_copy,
             }},
             .allocator = allocator,
         };
@@ -369,8 +377,6 @@ pub const TokenizedName = struct {
     }
 };
 
-// New streaming tokenization following Go implementation pattern
-// This will replace the complex tokenization pipeline in TASK 2
 pub fn streamingTokenize(
     allocator: std.mem.Allocator,
     input: []const u8,
@@ -380,7 +386,7 @@ pub fn streamingTokenize(
     apply_nfc: bool,
 ) ![]OutputToken {
     var tokens = std.ArrayList(OutputToken).init(allocator);
-    defer tokens.deinit();
+    errdefer tokens.deinit(); // Only free on error
     
     var text_buffer = std.ArrayList(CodePoint).init(allocator);
     defer text_buffer.deinit();
@@ -400,7 +406,10 @@ pub fn streamingTokenize(
             
             // Apply NFC if requested
             if (should_apply_nfc) {
-                codepoints = nfc.nfc(alloc, buffer.items, nfc_data_ref) catch buffer.items;
+                codepoints = nfc.nfc(alloc, buffer.items, nfc_data_ref) catch |err| {
+                    std.debug.print("streamingTokenize: NFC failed with error: {}\n", .{err});
+                    return; // Can't continue if NFC fails
+                };
             }
             
             const token = try OutputToken.init(alloc, codepoints, null);
@@ -471,7 +480,6 @@ pub fn streamingTokenize(
     return tokens.toOwnedSlice();
 }
 
-// New simplified TokenizedName using OutputTokens
 pub const StreamTokenizedName = struct {
     input: []const u8,
     tokens: []OutputToken,
@@ -524,83 +532,6 @@ pub const StreamTokenizedName = struct {
     }
 };
 
-// Character classification interface
-pub const CharacterSpecs = struct {
-    // For now, simple implementations - would be replaced with actual data
-    pub fn isValid(self: *const CharacterSpecs, cp: CodePoint) bool {
-        _ = self;
-        // Simple ASCII letters and digits for now
-        return (cp >= 'a' and cp <= 'z') or 
-               (cp >= 'A' and cp <= 'Z') or 
-               (cp >= '0' and cp <= '9') or
-               cp == '-' or
-               cp == '_' or  // underscore (validated for placement later)
-               cp == '\'';   // apostrophe (fenced character, validated for placement later)
-    }
-    
-    pub fn isIgnored(self: *const CharacterSpecs, cp: CodePoint) bool {
-        _ = self;
-        // Common ignored characters
-        return cp == 0x00AD or // soft hyphen
-               cp == 0x200C or // zero width non-joiner
-               cp == 0x200D or // zero width joiner
-               cp == 0xFEFF;   // zero width no-break space
-    }
-    
-    pub fn getMapped(self: *const CharacterSpecs, cp: CodePoint) ?[]const CodePoint {
-        _ = self;
-        // Simple case folding for now
-        if (cp >= 'A' and cp <= 'Z') {
-            // Would need to allocate and return lowercase
-            return null; // Placeholder
-        }
-        return null;
-    }
-    
-    pub fn isStop(self: *const CharacterSpecs, cp: CodePoint) bool {
-        _ = self;
-        return cp == constants.CP_STOP;
-    }
-};
-
-fn tokenizeInput(
-    allocator: std.mem.Allocator,
-    input: []const u8,
-    specs: *const code_points.CodePointsSpecs,
-    apply_nfc: bool,
-) ![]Token {
-    _ = specs;
-    _ = apply_nfc;
-    
-    var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
-    
-    // Convert input to code points
-    const cps = try utils.str2cps(allocator, input);
-    defer allocator.free(cps);
-    
-    // Create a simple character specs for now
-    const char_specs = CharacterSpecs{};
-    
-    for (cps) |cp| {
-        if (char_specs.isStop(cp)) {
-            try tokens.append(Token.createStop(allocator));
-        } else if (char_specs.isValid(cp)) {
-            try tokens.append(try Token.createValid(allocator, &[_]CodePoint{cp}));
-        } else if (char_specs.isIgnored(cp)) {
-            try tokens.append(Token.createIgnored(allocator, cp));
-        } else if (char_specs.getMapped(cp)) |mapped| {
-            try tokens.append(try Token.createMapped(allocator, cp, mapped));
-        } else {
-            try tokens.append(Token.createDisallowed(allocator, cp));
-        }
-    }
-    
-    // Collapse consecutive valid tokens
-    try collapseValidTokens(allocator, &tokens);
-    
-    return tokens.toOwnedSlice();
-}
 
 fn tokenizeInputWithMappings(
     allocator: std.mem.Allocator,
@@ -618,17 +549,6 @@ fn tokenizeInputWithMappings(
     return tokenizeInputWithMappingsImpl(allocator, input, &mappings, apply_nfc);
 }
 
-// Main tokenization implementation following ENSIP-15
-// Algorithm:
-// 1. Process input looking for emoji sequences first (emoji have priority)
-// 2. Process individual characters (valid, mapped, ignored, disallowed, stop)
-// 3. Apply NFC normalization as a post-processing step if requested
-// 4. Collapse consecutive valid tokens
-//
-// This matches the reference JavaScript implementation's approach of:
-// - Emoji-first processing
-// - Character-by-character fallback
-// - NFC as post-processing
 fn tokenizeInputWithMappingsImpl(
     allocator: std.mem.Allocator,
     input: []const u8,
@@ -636,7 +556,7 @@ fn tokenizeInputWithMappingsImpl(
     apply_nfc: bool,
 ) ![]Token {
     var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
+    errdefer tokens.deinit(); // Only free on error
     
     // Load emoji map
     var emoji_map = static_data_loader.loadEmoji(allocator) catch |err| {
@@ -709,7 +629,7 @@ fn tokenizeInputWithMappingsImplWithData(
     apply_nfc: bool,
 ) ![]Token {
     var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
+    errdefer tokens.deinit(); // Only free on error
     
     // Process input looking for emojis first
     var i: usize = 0;
@@ -969,32 +889,6 @@ test "whitespace tokenization" {
     std.debug.print("\n", .{});
 }
 
-test "character classification" {
-    const testing = std.testing;
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    
-    const specs = CharacterSpecs{};
-    
-    // Test valid characters
-    try testing.expect(specs.isValid('a'));
-    try testing.expect(specs.isValid('Z'));
-    try testing.expect(specs.isValid('5'));
-    try testing.expect(specs.isValid('-'));
-    
-    // Test invalid characters
-    try testing.expect(!specs.isValid('!'));
-    try testing.expect(!specs.isValid('@'));
-    
-    // Test ignored characters
-    try testing.expect(specs.isIgnored(0x00AD)); // soft hyphen
-    try testing.expect(specs.isIgnored(0x200C)); // ZWNJ
-    try testing.expect(specs.isIgnored(0x200D)); // ZWJ
-    
-    // Test stop character
-    try testing.expect(specs.isStop('.'));
-    try testing.expect(!specs.isStop('a'));
-}
 
 test "token collapse functionality" {
     const testing = std.testing;
@@ -1019,7 +913,6 @@ test "token collapse functionality" {
     try testing.expect(has_valid);
 }
 
-// Fallback tokenization without emoji support
 fn tokenizeWithoutEmoji(
     allocator: std.mem.Allocator,
     input: []const u8,
@@ -1027,7 +920,7 @@ fn tokenizeWithoutEmoji(
     apply_nfc: bool,
 ) ![]Token {
     var tokens = std.ArrayList(Token).init(allocator);
-    defer tokens.deinit();
+    errdefer tokens.deinit(); // Only free on error
     
     // Convert input to code points
     const cps = try utils.str2cps(allocator, input);
@@ -1060,7 +953,6 @@ fn tokenizeWithoutEmoji(
     return tokens.toOwnedSlice();
 }
 
-// Apply NFC transformation to tokens
 fn applyNFCTransform(allocator: std.mem.Allocator, tokens: *std.ArrayList(Token), nfc_data: *const nfc.NFCData) !void {
     var i: usize = 0;
     while (i < tokens.items.len) {
