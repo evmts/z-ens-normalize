@@ -278,14 +278,14 @@ pub fn build(b: *std.Build) void {
     // 
     // const run_combining_mark_tests = b.addRunArtifact(combining_mark_tests);
     // 
-    // const nsm_validation_tests = b.addTest(.{
-    //     .root_source_file = b.path("tests/nsm_validation_tests.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    // nsm_validation_tests.root_module.addImport("ens_normalize", lib_mod);
-    // 
-    // const run_nsm_validation_tests = b.addRunArtifact(nsm_validation_tests);
+    const nsm_validation_tests = b.addTest(.{
+        .root_source_file = b.path("tests/nsm_validation_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nsm_validation_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_nsm_validation_tests = b.addRunArtifact(nsm_validation_tests);
     
     const official_test_vectors = b.addTest(.{
         .root_source_file = b.path("tests/official_test_vectors.zig"),
@@ -420,7 +420,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_confusable_tests.step);
     // TODO: Re-enable these tests after fixing NSM/combining mark validation crashes
     // test_step.dependOn(&run_combining_mark_tests.step);
-    // test_step.dependOn(&run_nsm_validation_tests.step);
+    test_step.dependOn(&run_nsm_validation_tests.step);
     test_step.dependOn(&run_official_test_vectors.step);
     test_step.dependOn(&run_character_classification_tests.step);
     test_step.dependOn(&run_nfc_normalization_tests.step);
@@ -594,4 +594,30 @@ pub fn build(b: *std.Build) void {
     const run_beautify_correct_test = b.addRunArtifact(beautify_correct_test);
     const beautify_correct_test_step = b.step("test-beautify-correct", "Run beautify correct test");
     beautify_correct_test_step.dependOn(&run_beautify_correct_test.step);
+    
+    // Add empty string test
+    const empty_string_test = b.addExecutable(.{
+        .name = "test_empty_string",
+        .root_source_file = b.path("test_empty_string.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    empty_string_test.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_empty_string_test = b.addRunArtifact(empty_string_test);
+    const empty_string_test_step = b.step("test-empty-string", "Run empty string test");
+    empty_string_test_step.dependOn(&run_empty_string_test.step);
+    
+    // Add emoji priority debug test
+    const emoji_priority_debug_test = b.addExecutable(.{
+        .name = "debug_emoji_priority",
+        .root_source_file = b.path("debug_emoji_priority.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    emoji_priority_debug_test.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_emoji_priority_debug_test = b.addRunArtifact(emoji_priority_debug_test);
+    const emoji_priority_debug_test_step = b.step("debug-emoji-priority", "Run emoji priority debug test");
+    emoji_priority_debug_test_step.dependOn(&run_emoji_priority_debug_test.step);
 }
