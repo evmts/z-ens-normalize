@@ -9,6 +9,8 @@ const error_types = @import("error.zig");
 const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
 const log = @import("logger.zig");
+const static_data_loader = @import("static_data_loader.zig");
+const nfc = @import("nfc.zig");
 
 pub const LabelType = union(enum) {
     ascii,
@@ -43,6 +45,10 @@ pub const ValidatedLabel = struct {
     }
     
     pub fn deinit(self: ValidatedLabel) void {
+        // Properly deinit each token before freeing the array
+        for (self.tokens) |token| {
+            token.deinit();
+        }
         self.allocator.free(self.tokens);
     }
 };
@@ -94,8 +100,7 @@ pub const TokenizedLabel = struct {
         
         for (self.tokens) |token| {
             if (!token.isIgnored() and token.isText()) {
-                const cps = try token.getCps(allocator);
-                defer allocator.free(cps);
+                const cps = token.getCps();
                 try result.appendSlice(cps);
             }
         }
@@ -176,7 +181,6 @@ pub fn validateNameWithStreamData(
     const timer = log.Timer.start("validateNameWithStreamData");
     defer timer.stop();
     
-    _ = script_groups_data;
     _ = confusables_data;
     
     if (name.tokens.len == 0) {
@@ -186,46 +190,119 @@ pub fn validateNameWithStreamData(
     
     log.debug("Validating stream name with {} tokens", .{name.tokens.len});
     
-    // For now, create a simple implementation that treats the entire name as one label
-    // TODO: Implement proper label splitting on stop tokens
+    // Split tokens into labels based on STOP tokens (dots)
     var labels = std.ArrayList(ValidatedLabel).init(allocator);
     errdefer labels.deinit(); // Only free on error
     
-    // Convert OutputTokens to legacy format for validation
-    // This is temporary during TASK 2 transition
-    var legacy_tokens = std.ArrayList(tokenizer.Token).init(allocator);
+    var current_label_tokens = std.ArrayList(tokenizer.Token).init(allocator);
     defer {
-        for (legacy_tokens.items) |token| {
+        // Clean up any remaining tokens
+        for (current_label_tokens.items) |token| {
             token.deinit();
         }
-        legacy_tokens.deinit();
+        current_label_tokens.deinit();
     }
     
-    for (name.tokens) |output_token| {
-        if (output_token.isEmoji()) {
-            // Create emoji token
-            const emoji_token = try tokenizer.Token.createEmoji(
-                allocator,
-                output_token.codepoints,
-                output_token.emoji.?.emoji,
-                output_token.codepoints
-            );
-            try legacy_tokens.append(emoji_token);
+    // Process tokens and split on STOP
+    for (name.tokens, 0..) |output_token, token_idx| {
+        // Early check for emoji + combining mark pattern (should fail)
+        if (token_idx > 0 and 
+            name.tokens[token_idx - 1].isEmoji() and 
+            output_token.type == .valid and
+            output_token.codepoints.len > 0 and
+            isCombiningMark(output_token.codepoints[0])) {
+            log.err("Combining mark after emoji found: U+{X:0>4}", .{output_token.codepoints[0]});
+            return error_types.ProcessError.DisallowedSequence;
+        }
+        
+        // Check if this is a STOP token
+        if (output_token.type == .stop) {
+            log.debug("Found STOP token at position {}, validating current label with {} tokens", .{token_idx, current_label_tokens.items.len});
+            
+            // Check for leading dot (first token is stop)
+            if (token_idx == 0) {
+                log.err("Leading dot found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            }
+            
+            // Validate the current label if it has tokens
+            if (current_label_tokens.items.len > 0) {
+                const label = TokenizedLabel{
+                    .tokens = current_label_tokens.items,
+                    .allocator = allocator,
+                };
+                
+                const validated = try validateLabelWithGroups(allocator, label, specs, script_groups_data);
+                try labels.append(validated);
+                
+                // Clear the current label tokens for the next label (tokens now owned by ValidatedLabel)
+                current_label_tokens.clearRetainingCapacity();
+            } else {
+                // Empty label - this is an error
+                log.err("Empty label found", .{});
+                return error_types.ProcessError.DisallowedSequence;
+            }
         } else {
-            // Create valid token (assuming all text is valid for now)
-            const valid_token = try tokenizer.Token.createValid(allocator, output_token.codepoints);
-            try legacy_tokens.append(valid_token);
+            // Convert OutputToken to legacy Token format
+            if (output_token.isEmoji()) {
+                // Create emoji token - check emoji data is valid first
+                if (output_token.emoji) |emoji_data| {
+                    log.debug("Creating emoji token with input.len={}, emoji.len={}, cps.len={}", .{
+                        output_token.codepoints.len, emoji_data.emoji.len, output_token.codepoints.len
+                    });
+                    const emoji_token = try tokenizer.Token.createEmoji(
+                        allocator,
+                        output_token.codepoints,
+                        emoji_data.emoji,
+                        emoji_data.emoji // Use the canonical emoji form as the cps
+                    );
+                    try current_label_tokens.append(emoji_token);
+                } else {
+                    // Should not happen - emoji token without emoji data
+                    log.err("Emoji token without emoji data found", .{});
+                    return error_types.ProcessError.DisallowedSequence;
+                }
+            } else {
+                // Create appropriate token based on type
+                const token = switch (output_token.type) {
+                    .valid => try tokenizer.Token.createValid(allocator, output_token.codepoints),
+                    .mapped => blk: {
+                        // For mapped tokens, we need the original codepoint
+                        // Since we don't have it in OutputToken, use the first codepoint
+                        const cp = if (output_token.codepoints.len > 0) output_token.codepoints[0] else 0;
+                        break :blk try tokenizer.Token.createMapped(allocator, cp, output_token.codepoints);
+                    },
+                    .ignored => tokenizer.Token.createIgnored(allocator, if (output_token.codepoints.len > 0) output_token.codepoints[0] else 0),
+                    .disallowed => tokenizer.Token.createDisallowed(allocator, if (output_token.codepoints.len > 0) output_token.codepoints[0] else 0),
+                    .nfc => try tokenizer.Token.createNFC(allocator, output_token.codepoints, output_token.codepoints, null, null),
+                    else => unreachable, // stop already handled above
+                };
+                try current_label_tokens.append(token);
+            }
         }
     }
     
-    const label = TokenizedLabel{
-        .tokens = legacy_tokens.items,
-        .allocator = allocator,
-    };
+    // Don't forget the last label (no trailing dot)
+    if (current_label_tokens.items.len > 0) {
+        log.debug("Validating final label with {} tokens", .{current_label_tokens.items.len});
+        
+        const label = TokenizedLabel{
+            .tokens = current_label_tokens.items,
+            .allocator = allocator,
+        };
+        
+        const validated = try validateLabel(allocator, label, specs);
+        try labels.append(validated);
+        
+        // Clear tokens since they're now owned by the validated label
+        current_label_tokens.clearRetainingCapacity();
+    } else if (name.tokens.len > 0 and name.tokens[name.tokens.len - 1].type == .stop) {
+        // Trailing dot - this is an error
+        log.err("Trailing dot found", .{});
+        return error_types.ProcessError.DisallowedSequence;
+    }
     
-    const validated = try validateLabel(allocator, label, specs);
-    try labels.append(validated);
-    
+    log.info("Validated {} labels", .{labels.items.len});
     return labels.toOwnedSlice();
 }
 
@@ -233,6 +310,20 @@ pub fn validateLabel(
     allocator: std.mem.Allocator,
     label: TokenizedLabel,
     specs: *const code_points.CodePointsSpecs,
+) !ValidatedLabel {
+    // For now, create temporary script groups for NSM checking
+    // In real implementation, this should be passed from caller
+    var script_groups_data = try static_data_loader.loadScriptGroups(allocator);
+    defer script_groups_data.deinit();
+    
+    return validateLabelWithGroups(allocator, label, specs, &script_groups_data);
+}
+
+fn validateLabelWithGroups(
+    allocator: std.mem.Allocator,
+    label: TokenizedLabel,
+    specs: *const code_points.CodePointsSpecs,
+    script_groups_data: *const script_groups.ScriptGroups,
 ) !ValidatedLabel {
     try checkNonEmpty(label);
     try checkTokenTypes(allocator, label);
@@ -251,17 +342,12 @@ pub fn validateLabel(
     try checkFenced(allocator, label, specs);
     try checkCmLeadingEmoji(allocator, label, specs);
     
-    // TODO: Implement proper script group determination later
-    // For now, skip the group checking that was causing error.Confused
+    // Check NSM (Non-Spacing Mark) rules
+    try checkNonSpacingMarks(allocator, label, specs, script_groups_data);
     
     // Determine label type based on content
-    if (label.isFullyEmoji()) {
-        return ValidatedLabel.init(allocator, label.tokens, LabelType.emoji);
-    } else if (label.isFullyAscii()) {
-        return ValidatedLabel.init(allocator, label.tokens, LabelType.ascii);
-    } else {
-        return ValidatedLabel.init(allocator, label.tokens, LabelType{ .other = "Unicode" });
-    }
+    const label_type = try determineLabelType(allocator, label);
+    return ValidatedLabel.init(allocator, label.tokens, label_type);
 }
 
 fn checkNonEmpty(label: TokenizedLabel) !void {
@@ -299,18 +385,18 @@ fn checkUnderscoreOnlyAtBeginning(allocator: std.mem.Allocator, label: Tokenized
     const cps = try label.iterCps(allocator);
     defer allocator.free(cps);
     
-    var leading_underscores: usize = 0;
+    // This implements the Go checkLeadingUnderscore logic:
+    // Underscores are only allowed at the beginning of a label
+    var allowed = true;
     for (cps) |cp| {
-        if (cp == constants.CP_UNDERSCORE) {
-            leading_underscores += 1;
+        if (allowed) {
+            if (cp != constants.CP_UNDERSCORE) {
+                allowed = false;
+            }
         } else {
-            break;
-        }
-    }
-    
-    for (cps[leading_underscores..]) |cp| {
-        if (cp == constants.CP_UNDERSCORE) {
-            return error_types.ProcessError.CurrableError;
+            if (cp == constants.CP_UNDERSCORE) {
+                return error_types.ProcessError.DisallowedSequence;
+            }
         }
     }
 }
@@ -319,8 +405,10 @@ fn checkNoHyphenAtSecondAndThird(allocator: std.mem.Allocator, label: TokenizedL
     const cps = try label.iterCps(allocator);
     defer allocator.free(cps);
     
+    // This implements the Go checkLabelExtension logic:
+    // Labels cannot have hyphens at positions 2 and 3 (xn-- is invalid)
     if (cps.len >= 4 and cps[2] == constants.CP_HYPHEN and cps[3] == constants.CP_HYPHEN) {
-        return error_types.ProcessError.CurrableError;
+        return error_types.ProcessError.DisallowedSequence;
     }
 }
 
@@ -345,13 +433,138 @@ fn checkFenced(allocator: std.mem.Allocator, label: TokenizedLabel, specs: *cons
 
 fn checkCmLeadingEmoji(allocator: std.mem.Allocator, label: TokenizedLabel, specs: *const code_points.CodePointsSpecs) !void {
     _ = allocator;
-    _ = label;
     _ = specs;
-    // TODO: implement combining mark checking
+    
+    // Check for leading combining marks and combining marks after emoji
+    // This implements the Java checkCombiningMarks logic
+    
+    for (label.tokens, 0..) |token, i| {
+        if (token.isEmoji()) continue;
+        
+        const cps = token.getCps();
+        if (cps.len == 0) continue;
+        
+        const first_cp = cps[0];
+        if (isCombiningMark(first_cp)) {
+            if (i == 0) {
+                // Leading combining mark
+                log.err("Leading combining mark found: U+{X:0>4}", .{first_cp});
+                return error_types.ProcessError.DisallowedSequence;
+            } else {
+                // Check if previous token was emoji
+                const prev_token = label.tokens[i - 1];
+                if (prev_token.isEmoji()) {
+                    log.err("Combining mark after emoji found: U+{X:0>4}", .{first_cp});
+                    return error_types.ProcessError.DisallowedSequence;
+                }
+            }
+        }
+    }
 }
 
-// checkAndGetGroup removed - was causing error.Confused failures
-// Script group determination is now handled in the main validator.zig
+/// Basic check for combining marks using Unicode categories
+fn isCombiningMark(cp: CodePoint) bool {
+    // Common combining marks (overlaps with NSM but focuses on combining behavior)
+    // This is a simplified check - full implementation would use Unicode data
+    return (cp >= 0x0300 and cp <= 0x036F) or // Combining Diacritical Marks
+           (cp >= 0x1AB0 and cp <= 0x1AFF) or // Combining Diacritical Marks Extended
+           (cp >= 0x1DC0 and cp <= 0x1DFF) or // Combining Diacritical Marks Supplement
+           (cp >= 0x20D0 and cp <= 0x20FF) or // Combining Diacritical Marks for Symbols
+           (cp >= 0xFE20 and cp <= 0xFE2F);   // Combining Half Marks
+}
+
+fn checkNonSpacingMarks(allocator: std.mem.Allocator, label: TokenizedLabel, specs: *const code_points.CodePointsSpecs, script_groups_data: *const script_groups.ScriptGroups) !void {
+    _ = specs; // Not used in this function
+    // Get all codepoints and apply NFD decomposition
+    const cps = try label.iterCps(allocator);
+    defer allocator.free(cps);
+    
+    // We need NFC data for decomposition
+    var nfc_data = try static_data_loader.loadNFC(allocator);
+    defer nfc_data.deinit();
+    
+    // Apply NFD decomposition
+    const nfd_cps = try nfc.decompose(allocator, cps, &nfc_data);
+    defer allocator.free(nfd_cps);
+    
+    // Maximum allowed consecutive non-spacing marks (from C# reference)
+    const MAX_NON_SPACING_MARKS = 4;
+    
+    // Iterate through decomposed codepoints
+    var i: usize = 1; // Start from 1 as per C# implementation
+    while (i < nfd_cps.len) : (i += 1) {
+        // Check if this is a non-spacing mark
+        if (script_groups_data.isNSM(nfd_cps[i])) {
+            const start_i = i;
+            var j = i + 1;
+            
+            // Find consecutive NSMs
+            while (j < nfd_cps.len and script_groups_data.isNSM(nfd_cps[j])) : (j += 1) {
+                // Check for duplicate NSMs
+                var k = start_i;
+                while (k < j) : (k += 1) {
+                    if (nfd_cps[k] == nfd_cps[j]) {
+                        log.err("Duplicate non-spacing mark found: U+{X:0>4}", .{nfd_cps[j]});
+                        return error_types.ProcessError.DisallowedSequence;
+                    }
+                }
+            }
+            
+            // Check if we have too many consecutive NSMs
+            const nsm_count = j - start_i;
+            if (nsm_count > MAX_NON_SPACING_MARKS) {
+                log.err("Excessive non-spacing marks: {} (max allowed: {})", .{nsm_count, MAX_NON_SPACING_MARKS});
+                return error_types.ProcessError.DisallowedSequence;
+            }
+            
+            // Update i to continue after the NSM sequence
+            i = j - 1; // -1 because loop will increment
+        }
+    }
+}
+
+/// Determine the script type of a label
+fn determineLabelType(allocator: std.mem.Allocator, label: TokenizedLabel) !LabelType {
+    // Check easy cases first
+    if (label.isFullyEmoji()) {
+        return LabelType.emoji;
+    }
+    
+    if (label.isFullyAscii()) {
+        return LabelType.ascii;
+    }
+    
+    // For non-ASCII labels, check if they're purely Greek
+    const non_ignored_cps = try label.getCpsOfNotIgnoredText(allocator);
+    defer allocator.free(non_ignored_cps);
+    
+    if (non_ignored_cps.len == 0) {
+        return LabelType.ascii; // Default for empty
+    }
+    
+    // Check if all codepoints are Greek
+    var all_greek = true;
+    for (non_ignored_cps) |cp| {
+        if (!isGreekCodepoint(cp)) {
+            all_greek = false;
+            break;
+        }
+    }
+    
+    if (all_greek) {
+        return LabelType.greek;
+    }
+    
+    // TODO: Add detection for other scripts (Cyrillic, Arabic, etc.)
+    return LabelType{ .other = "Unicode" };
+}
+
+/// Check if a codepoint is Greek script
+fn isGreekCodepoint(cp: CodePoint) bool {
+    // Greek and Coptic: U+0370 - U+03FF
+    // Greek Extended: U+1F00 - U+1FFF
+    return (cp >= 0x0370 and cp <= 0x03FF) or (cp >= 0x1F00 and cp <= 0x1FFF);
+}
 
 test "validateLabel basic functionality" {
     const testing = std.testing;
