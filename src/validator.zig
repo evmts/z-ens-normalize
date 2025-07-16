@@ -71,6 +71,7 @@ pub const ValidatedLabel = struct {
     pub fn deinit(self: ValidatedLabel) void {
         // Note: tokens are owned by the tokenizer, we only own the slice
         self.allocator.free(self.tokens);
+        self.allocator.free(self.script_group.name);
     }
     
     pub fn isEmpty(self: ValidatedLabel) bool {
@@ -78,7 +79,22 @@ pub const ValidatedLabel = struct {
     }
     
     pub fn isASCII(self: ValidatedLabel) bool {
-        return std.mem.eql(u8, self.script_group.name, "ASCII");
+        // Latin script with all ASCII characters is considered ASCII
+        if (!std.mem.eql(u8, self.script_group.name, "Latin")) {
+            return false;
+        }
+        
+        // Check if all tokens contain only ASCII codepoints
+        for (self.tokens) |token| {
+            const cps = token.getCps();
+            for (cps) |cp| {
+                if (cp > 0x7F) {
+                    return false;
+                }
+            }
+        }
+        
+        return true;
     }
     
     pub fn isEmoji(self: ValidatedLabel) bool {
@@ -173,6 +189,7 @@ pub fn validateLabel(
 ) ValidationError!ValidatedLabel {
     _ = specs; // TODO: Use specs for advanced validation
     
+    
     // Step 1: Check for empty label
     try checkNotEmpty(tokenized_name);
     
@@ -190,7 +207,6 @@ pub fn validateLabel(
     var groups = static_data_loader.loadScriptGroups(allocator) catch |err| {
         switch (err) {
             error.OutOfMemory => return ValidationError.OutOfMemory,
-            else => return ValidationError.OutOfMemory, // Map all other errors to OutOfMemory
         }
     };
     defer groups.deinit();
@@ -222,8 +238,18 @@ pub fn validateLabel(
     };
     
     // Step 6: Apply script-specific validation
-    if (std.mem.eql(u8, script_group.name, "ASCII")) {
-        try checkASCIIRules(cps);
+    if (std.mem.eql(u8, script_group.name, "Latin")) {
+        // Check if all characters are ASCII
+        var all_ascii = true;
+        for (cps) |cp| {
+            if (cp > 0x7F) {
+                all_ascii = false;
+                break;
+            }
+        }
+        if (all_ascii) {
+            try checkASCIIRules(cps);
+        }
     } else if (std.mem.eql(u8, script_group.name, "Emoji")) {
         try checkEmojiRules(tokenized_name.tokens);
     } else {
@@ -254,7 +280,6 @@ pub fn validateLabel(
     var confusable_data = static_data_loader.loadConfusables(allocator) catch |err| {
         switch (err) {
             error.OutOfMemory => return ValidationError.OutOfMemory,
-            else => return ValidationError.OutOfMemory, // Map all other errors to OutOfMemory
         }
     };
     defer confusable_data.deinit();
@@ -264,11 +289,30 @@ pub fn validateLabel(
         return ValidationError.WholeScriptConfusable;
     }
     
+    const owned_name = try allocator.dupe(u8, script_group.name);
     const script_ref = ScriptGroupRef{
         .group = script_group,
-        .name = script_group.name,
+        .name = owned_name,
     };
     return ValidatedLabel.init(allocator, tokenized_name.tokens, script_ref);
+}
+
+// Helper function to check if a codepoint is whitespace
+fn isWhitespace(cp: CodePoint) bool {
+    return switch (cp) {
+        0x09...0x0D => true, // Tab, LF, VT, FF, CR
+        0x20 => true,        // Space
+        0x85 => true,        // Next Line
+        0xA0 => true,        // Non-breaking space
+        0x1680 => true,      // Ogham space mark
+        0x2000...0x200A => true, // Various spaces
+        0x2028 => true,      // Line separator
+        0x2029 => true,      // Paragraph separator
+        0x202F => true,      // Narrow no-break space
+        0x205F => true,      // Medium mathematical space
+        0x3000 => true,      // Ideographic space
+        else => false,
+    };
 }
 
 // Validation helper functions
@@ -277,19 +321,28 @@ fn checkNotEmpty(tokenized_name: tokenizer.TokenizedName) ValidationError!void {
         return ValidationError.EmptyLabel;
     }
     
-    // Check if all tokens are ignored
-    var has_non_ignored = false;
+    // Check if all tokens are ignored or disallowed whitespace
+    var has_content = false;
     for (tokenized_name.tokens) |token| {
         switch (token.type) {
             .ignored => continue,
+            .disallowed => {
+                // Check if it's whitespace
+                const cp = token.data.disallowed.cp;
+                if (isWhitespace(cp)) {
+                    continue;
+                }
+                has_content = true;
+                break;
+            },
             else => {
-                has_non_ignored = true;
+                has_content = true;
                 break;
             }
         }
     }
     
-    if (!has_non_ignored) {
+    if (!has_content) {
         return ValidationError.EmptyLabel;
     }
 }
@@ -491,14 +544,14 @@ test "validator - ASCII label" {
     const allocator = arena.allocator();
     
     const specs = code_points.CodePointsSpecs.init(allocator);
+    
     const tokenized = try tokenizer.TokenizedName.fromInput(allocator, "hello", &specs, false);
     defer tokenized.deinit();
-    
     const result = try validateLabel(allocator, tokenized, &specs);
     defer result.deinit();
     
     try testing.expect(result.isASCII());
-    try testing.expectEqualStrings("ASCII", result.script_group.name);
+    try testing.expectEqualStrings("Latin", result.script_group.name);
 }
 
 test "validator - underscore rules" {
@@ -588,11 +641,11 @@ test "validator - script group detection" {
     var groups = try static_data_loader.loadScriptGroups(allocator);
     defer groups.deinit();
     
-    // Test ASCII
+    // Test ASCII (which maps to Latin script group)
     {
         const cps = [_]CodePoint{'a', 'b', 'c'};
         const group = try groups.determineScriptGroup(&cps, allocator);
-        try testing.expectEqualStrings("ASCII", group.name);
+        try testing.expectEqualStrings("Latin", group.name);
     }
     
     // Test mixed script rejection
@@ -601,4 +654,24 @@ test "validator - script group detection" {
         const result = groups.determineScriptGroup(&cps, allocator);
         try testing.expectError(error.DisallowedCharacter, result);
     }
+}
+
+test "validator - whitespace empty label" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    const specs = code_points.CodePointsSpecs.init(allocator);
+    
+    // Test with single space
+    const input = " ";
+    const tokenized = try tokenizer.TokenizedName.fromInput(allocator, input, &specs, false);
+    defer tokenized.deinit();
+    
+    
+    const result = validateLabel(allocator, tokenized, &specs);
+    
+    // Should return EmptyLabel for whitespace-only input
+    try testing.expectError(ValidationError.EmptyLabel, result);
 }

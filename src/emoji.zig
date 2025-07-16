@@ -164,6 +164,73 @@ test "emoji map basic operations" {
     try testing.expectEqualSlices(CodePoint, &smile_canonical, found.?.emoji);
 }
 
+test "emoji map population - incorrect way" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    var emoji_map = EmojiMap.init(allocator);
+    defer emoji_map.deinit();
+    
+    // Create emoji data
+    const thumbs_emoji = try allocator.alloc(CodePoint, 1);
+    thumbs_emoji[0] = 0x1F44D;
+    const thumbs_no_fe0f = try allocator.dupe(CodePoint, thumbs_emoji);
+    
+    const emoji_data = EmojiData{
+        .emoji = thumbs_emoji,
+        .no_fe0f = thumbs_no_fe0f,
+    };
+    
+    // Add to all_emojis (what our loader does)
+    try emoji_map.all_emojis.append(emoji_data);
+    
+    // But this doesn't populate the hash map!
+    // Let's verify the hash map is empty
+    const key = try utils.cps2str(allocator, thumbs_no_fe0f);
+    defer allocator.free(key);
+    
+    const found = emoji_map.emojis.get(key);
+    try testing.expect(found == null); // This should pass, showing the bug
+    
+    // Now test findEmojiAt - it should fail to find the emoji
+    const input = "Hello 👍 World";
+    const match = emoji_map.findEmojiAt(allocator, input, 6);
+    try testing.expect(match == null); // This should pass, confirming the bug
+}
+
+test "emoji map population - correct way" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    var emoji_map = EmojiMap.init(allocator);
+    defer emoji_map.deinit();
+    
+    // Use addEmoji which populates both structures
+    const thumbs_no_fe0f = [_]CodePoint{0x1F44D};
+    const thumbs_emoji = [_]CodePoint{0x1F44D};
+    try emoji_map.addEmoji(&thumbs_no_fe0f, &thumbs_emoji);
+    
+    // Verify the hash map is populated
+    const key = try utils.cps2str(allocator, &thumbs_no_fe0f);
+    defer allocator.free(key);
+    
+    const found = emoji_map.emojis.get(key);
+    try testing.expect(found != null);
+    
+    // Now test findEmojiAt - it should find the emoji
+    const input = "Hello 👍 World";
+    const match = emoji_map.findEmojiAt(allocator, input, 6);
+    try testing.expect(match != null);
+    if (match) |m| {
+        defer allocator.free(m.cps_input);
+        try testing.expectEqualSlices(CodePoint, &thumbs_emoji, m.emoji_data.emoji);
+    }
+}
+
 test "emoji matching" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

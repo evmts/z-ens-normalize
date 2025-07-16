@@ -11,6 +11,9 @@ const nfc = @import("nfc.zig");
 const emoji_mod = @import("emoji.zig");
 
 // Token types based on ENSIP-15 specification
+// Note: Unlike some implementations, our tokenizer can return errors for memory allocation
+// failures. The reference JavaScript implementation never throws, but in Zig we need to
+// handle allocation failures properly.
 pub const TokenType = enum {
     valid,
     mapped,
@@ -51,14 +54,15 @@ pub const Token = struct {
             cp: CodePoint,
         },
         emoji: struct {
-            input: []const u8,
-            cps_input: []const CodePoint,
-            emoji: []const CodePoint,
-            cps_no_fe0f: []const CodePoint,
+            input: []const CodePoint,  // Changed from []const u8 to match reference
+            emoji: []const CodePoint,   // fully-qualified emoji
+            cps: []const CodePoint,     // output (fe0f filtered) - renamed from cps_no_fe0f
         },
         nfc: struct {
             input: []const CodePoint,
             cps: []const CodePoint,
+            tokens0: ?[]Token,          // tokens before NFC (optional)
+            tokens: ?[]Token,           // tokens after NFC (optional)
         },
         stop: struct {
             cp: CodePoint,
@@ -74,8 +78,8 @@ pub const Token = struct {
                 .mapped => .{ .mapped = .{ .cp = 0, .cps = &[_]CodePoint{} } },
                 .ignored => .{ .ignored = .{ .cp = 0 } },
                 .disallowed => .{ .disallowed = .{ .cp = 0 } },
-                .emoji => .{ .emoji = .{ .input = "", .cps_input = &[_]CodePoint{}, .emoji = &[_]CodePoint{}, .cps_no_fe0f = &[_]CodePoint{} } },
-                .nfc => .{ .nfc = .{ .input = &[_]CodePoint{}, .cps = &[_]CodePoint{} } },
+                .emoji => .{ .emoji = .{ .input = &[_]CodePoint{}, .emoji = &[_]CodePoint{}, .cps = &[_]CodePoint{} } },
+                .nfc => .{ .nfc = .{ .input = &[_]CodePoint{}, .cps = &[_]CodePoint{}, .tokens0 = null, .tokens = null } },
                 .stop => .{ .stop = .{ .cp = constants.CP_STOP } },
             },
             .allocator = allocator,
@@ -88,13 +92,24 @@ pub const Token = struct {
             .mapped => |data| self.allocator.free(data.cps),
             .emoji => |data| {
                 self.allocator.free(data.input);
-                self.allocator.free(data.cps_input);
                 self.allocator.free(data.emoji);
-                self.allocator.free(data.cps_no_fe0f);
+                self.allocator.free(data.cps);
             },
             .nfc => |data| {
                 self.allocator.free(data.input);
                 self.allocator.free(data.cps);
+                if (data.tokens0) |tokens0| {
+                    for (tokens0) |token| {
+                        token.deinit();
+                    }
+                    self.allocator.free(tokens0);
+                }
+                if (data.tokens) |tokens| {
+                    for (tokens) |token| {
+                        token.deinit();
+                    }
+                    self.allocator.free(tokens);
+                }
             },
             .ignored, .disallowed, .stop => {},
         }
@@ -104,7 +119,7 @@ pub const Token = struct {
         return switch (self.data) {
             .valid => |data| data.cps,
             .mapped => |data| data.cps,
-            .emoji => |data| data.cps_no_fe0f,
+            .emoji => |data| data.cps,
             .nfc => |data| data.cps,
             .ignored => |data| &[_]CodePoint{data.cp},
             .disallowed => |data| &[_]CodePoint{data.cp},
@@ -116,7 +131,7 @@ pub const Token = struct {
         return switch (self.data) {
             .valid => |data| data.cps.len,
             .nfc => |data| data.input.len,
-            .emoji => |data| data.cps_input.len,
+            .emoji => |data| data.input.len,
             .mapped, .ignored, .disallowed, .stop => 1,
         };
     }
@@ -188,18 +203,38 @@ pub const Token = struct {
     
     pub fn createEmoji(
         allocator: std.mem.Allocator,
-        input: []const u8,
-        cps_input: []const CodePoint,
+        input: []const CodePoint,
         emoji: []const CodePoint,
-        cps_no_fe0f: []const CodePoint
+        cps: []const CodePoint  // fe0f filtered
     ) !Token {
         return Token{
             .type = .emoji,
             .data = .{ .emoji = .{
-                .input = try allocator.dupe(u8, input),
-                .cps_input = try allocator.dupe(CodePoint, cps_input),
+                .input = try allocator.dupe(CodePoint, input),
                 .emoji = try allocator.dupe(CodePoint, emoji),
-                .cps_no_fe0f = try allocator.dupe(CodePoint, cps_no_fe0f),
+                .cps = try allocator.dupe(CodePoint, cps),
+            }},
+            .allocator = allocator,
+        };
+    }
+    
+    pub fn createNFC(
+        allocator: std.mem.Allocator,
+        input: []const CodePoint,
+        cps: []const CodePoint,
+        tokens0: ?[]Token,
+        tokens: ?[]Token,
+    ) !Token {
+        const owned_tokens0 = if (tokens0) |t| try allocator.dupe(Token, t) else null;
+        const owned_tokens = if (tokens) |t| try allocator.dupe(Token, t) else null;
+        
+        return Token{
+            .type = .nfc,
+            .data = .{ .nfc = .{
+                .input = try allocator.dupe(CodePoint, input),
+                .cps = try allocator.dupe(CodePoint, cps),
+                .tokens0 = owned_tokens0,
+                .tokens = owned_tokens,
             }},
             .allocator = allocator,
         };
@@ -372,6 +407,17 @@ fn tokenizeInputWithMappings(
     return tokenizeInputWithMappingsImpl(allocator, input, &mappings, apply_nfc);
 }
 
+// Main tokenization implementation following ENSIP-15
+// Algorithm:
+// 1. Process input looking for emoji sequences first (emoji have priority)
+// 2. Process individual characters (valid, mapped, ignored, disallowed, stop)
+// 3. Apply NFC normalization as a post-processing step if requested
+// 4. Collapse consecutive valid tokens
+//
+// This matches the reference JavaScript implementation's approach of:
+// - Emoji-first processing
+// - Character-by-character fallback
+// - NFC as post-processing
 fn tokenizeInputWithMappingsImpl(
     allocator: std.mem.Allocator,
     input: []const u8,
@@ -398,7 +444,6 @@ fn tokenizeInputWithMappingsImpl(
             // Create emoji token
             try tokens.append(try Token.createEmoji(
                 allocator,
-                match.input,
                 match.cps_input,
                 match.emoji_data.emoji,
                 match.emoji_data.no_fe0f
@@ -575,6 +620,65 @@ test "empty input handling" {
     try testing.expectEqual(@as(usize, 0), result.tokens.len);
 }
 
+test "emoji tokenization" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    const specs = code_points.CodePointsSpecs.init(allocator);
+    
+    // Test simple emoji
+    const input = "hello👍world";
+    const result = try TokenizedName.fromInput(allocator, input, &specs, false);
+    defer result.deinit();
+    
+    // Should have: valid("hello"), emoji(👍), valid("world")
+    try testing.expect(result.tokens.len >= 3);
+    
+    var found_emoji = false;
+    for (result.tokens) |token| {
+        if (token.type == .emoji) {
+            found_emoji = true;
+            break;
+        }
+    }
+    
+    try testing.expect(found_emoji);
+}
+
+test "whitespace tokenization" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    const specs = code_points.CodePointsSpecs.init(allocator);
+    
+    // Test various whitespace characters
+    const whitespace_tests = [_]struct { input: []const u8, name: []const u8 }{
+        .{ .input = " ", .name = "space" },
+        .{ .input = "\t", .name = "tab" },
+        .{ .input = "\n", .name = "newline" },
+        .{ .input = "\u{00A0}", .name = "non-breaking space" },
+        .{ .input = "\u{2000}", .name = "en quad" },
+    };
+    
+    for (whitespace_tests) |test_case| {
+        const result = try TokenizedName.fromInput(allocator, test_case.input, &specs, false);
+        defer result.deinit();
+        
+        std.debug.print("\n{s}: tokens={}, ", .{ test_case.name, result.tokens.len });
+        if (result.tokens.len > 0) {
+            std.debug.print("type={s}", .{@tagName(result.tokens[0].type)});
+            if (result.tokens[0].type == .disallowed) {
+                std.debug.print(" cp=0x{x}", .{result.tokens[0].data.disallowed.cp});
+            }
+        }
+    }
+    std.debug.print("\n", .{});
+}
+
 test "character classification" {
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
@@ -721,15 +825,26 @@ fn applyNFCTransform(allocator: std.mem.Allocator, tokens: *std.ArrayList(Token)
                     
                     // Check if normalization changed anything
                     if (!nfc.compareCodePoints(all_cps.items, normalized)) {
-                        // Create NFC token
-                        var nfc_token = Token{
-                            .type = .nfc,
-                            .data = .{ .nfc = .{
-                                .input = try allocator.dupe(CodePoint, all_cps.items),
-                                .cps = try allocator.dupe(CodePoint, normalized),
-                            }},
-                            .allocator = allocator,
-                        };
+                        // Collect the original tokens for tokens0
+                        var tokens0 = try allocator.alloc(Token, end - i);
+                        for (tokens.items[i..end], 0..) |orig_token, idx| {
+                            // Create a copy of the token without transferring ownership
+                            tokens0[idx] = switch (orig_token.data) {
+                                .valid => |data| try Token.createValid(allocator, data.cps),
+                                .mapped => |data| try Token.createMapped(allocator, data.cp, data.cps),
+                                .ignored => |data| Token.createIgnored(allocator, data.cp),
+                                else => unreachable,
+                            };
+                        }
+                        
+                        // Create NFC token with tokens0
+                        const nfc_token = try Token.createNFC(
+                            allocator,
+                            all_cps.items,
+                            normalized,
+                            tokens0,
+                            null  // tokens field would be populated by re-tokenizing normalized string
+                        );
                         
                         // Clean up old tokens
                         for (tokens.items[i..end]) |old_token| {

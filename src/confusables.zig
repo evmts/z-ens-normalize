@@ -64,9 +64,10 @@ pub const ConfusableData = struct {
         var matching = std.ArrayList(*const ConfusableSet).init(allocator);
         errdefer matching.deinit();
         
-        for (self.sets) |*set| {
+        for (self.sets, 0..) |*set, i| {
             for (codepoints) |cp| {
                 if (set.contains(cp)) {
+                    _ = i; // Suppress unused variable warning
                     try matching.append(set);
                     break; // Found one, no need to check more codepoints for this set
                 }
@@ -84,11 +85,33 @@ pub const ConfusableData = struct {
         const matching_sets = try self.findSetsContaining(codepoints, allocator);
         defer allocator.free(matching_sets);
         
+        
         if (matching_sets.len <= 1) {
             return false; // No confusables or all from same set - safe
         }
         
         // Check for dangerous mixing between different confusable sets
+        // Key insight: mixing valid characters from different sets is OK
+        // Only mixing when at least one confused character is present is dangerous
+        
+        var has_confused = false;
+        for (codepoints) |cp| {
+            for (matching_sets) |set| {
+                if (set.containsConfused(cp)) {
+                    has_confused = true;
+                    break;
+                }
+            }
+            if (has_confused) break;
+        }
+        
+        // If there are no confused characters, it's safe even with multiple sets
+        if (!has_confused) {
+            return false;
+        }
+        
+        // Now check if we're mixing characters from different sets
+        // when at least one confused character is present
         for (matching_sets, 0..) |set1, i| {
             for (matching_sets[i+1..]) |set2| {
                 // Check if we have characters from both sets
@@ -101,7 +124,7 @@ pub const ConfusableData = struct {
                     
                     // Early exit if we found both
                     if (has_from_set1 and has_from_set2) {
-                        return true; // DANGEROUS: mixing confusable sets
+                        return true; // DANGEROUS: mixing confusable sets with confused characters
                     }
                 }
             }

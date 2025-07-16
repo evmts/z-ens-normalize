@@ -123,3 +123,53 @@ This must NEVER happen again. Always use the reference data and implementation e
 - MUST test with real ENS names from mainnet
 
 Remember: The goal is 100% compatibility with existing implementations. Nothing less is acceptable.
+
+## 🚫 CRITICAL: Data Format Rules
+
+### ZON vs JSON
+- **WE USE ZON FILES, NOT JSON**
+- The project has already been converted from JSON to ZON
+- **NEVER** suggest converting ZON back to JSON
+- **NEVER** try to parse ZON as JSON at runtime
+- **NEVER** create JSON-to-ZON or ZON-to-JSON converters
+
+### Why This Matters
+- We specifically converted from JSON to ZON for good reasons
+- Going back to JSON is moving backwards
+- Converting between formats at runtime is inefficient and error-prone
+- If ZON import isn't working, we need to fix the ZON import, not abandon it
+
+### Correct Approaches for ZON
+1. Use `@import` with proper type definitions at compile time
+2. Define proper Zig types that match the ZON structure
+3. Handle heterogeneous arrays with union types or other Zig constructs
+4. Use comptime code generation if needed
+
+### What NOT to Do
+- ❌ Convert ZON to JSON at runtime
+- ❌ Revert to JSON files
+- ❌ Parse ZON as text and transform it
+- ❌ Suggest "easier" solutions that involve JSON
+
+The project uses ZON. Period. Make it work with ZON.
+
+## 🔧 Zig Build System Rules
+
+### Adding Tests
+When creating new test files, you MUST add them to build.zig:
+1. Tests need to import the main module using `@import("ens_normalize")`
+2. In build.zig, each test must be added with the module dependency:
+   ```zig
+   const my_test = b.addTest(.{
+       .root_source_file = .{ .path = "tests/my_test.zig" },
+       .target = target,
+       .optimize = optimize,
+   });
+   my_test.root_module.addImport("ens_normalize", ens_normalize_module);
+   ```
+3. Never try to run tests directly with `zig test` - always use `zig build test`
+
+### Module System
+- The main module is defined in build.zig as `ens_normalize_module`
+- All tests must import it as `@import("ens_normalize")`
+- Individual source files cannot be tested in isolation if they depend on the module

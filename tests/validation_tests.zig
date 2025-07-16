@@ -62,6 +62,20 @@ fn runTestCase(test_case: ValidationTestCase) !void {
     const tokenized = try tokenizer.TokenizedName.fromInput(allocator, test_case.input, &specs, false);
     defer tokenized.deinit();
     
+    // Debug: Print tokenized result for whitespace test
+    if (std.mem.eql(u8, test_case.input, " ")) {
+        std.debug.print("\nDEBUG: Whitespace test tokenization:\n", .{});
+        std.debug.print("  Input: '{s}' (len={})\n", .{test_case.input, test_case.input.len});
+        std.debug.print("  Tokens: {} total\n", .{tokenized.tokens.len});
+        for (tokenized.tokens, 0..) |token, i| {
+            std.debug.print("    [{}] type={s}", .{i, @tagName(token.type)});
+            if (token.type == .disallowed) {
+                std.debug.print(" cp=0x{x}", .{token.data.disallowed.cp});
+            }
+            std.debug.print("\n", .{});
+        }
+    }
+    
     const result = validator.validateLabel(allocator, tokenized, &specs);
     
     if (test_case.expected_error) |expected_error| {
