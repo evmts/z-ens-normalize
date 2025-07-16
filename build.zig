@@ -254,4 +254,18 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_nfc_normalization_tests.step);
     // TODO: Fix syntax error in e2e_reference_tests.zig then re-enable
     // test_step.dependOn(&run_e2e_reference_tests.step);
+    
+    // Add test logging executable
+    const test_logging = b.addExecutable(.{
+        .name = "test_logging",
+        .root_source_file = b.path("test_logging.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_logging.root_module.addImport("ens_normalize", lib_mod);
+    b.installArtifact(test_logging);
+    
+    const run_test_logging = b.addRunArtifact(test_logging);
+    const test_logging_step = b.step("test-logging", "Run the logging test");
+    test_logging_step.dependOn(&run_test_logging.step);
 }
