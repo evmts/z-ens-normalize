@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 const CodePoint = root.CodePoint;
 const static_data_loader = @import("static_data_loader.zig");
+const log = @import("logger.zig");
 
 // NFC Data structure to hold normalization data
 pub const NFCData = struct {
@@ -89,6 +90,8 @@ pub fn isHangul(cp: CodePoint) bool {
 pub fn decomposeHangul(cp: CodePoint, result: *std.ArrayList(CodePoint)) !void {
     if (!isHangul(cp)) return;
     
+    log.trace("Decomposing Hangul syllable U+{X:0>4}", .{cp});
+    
     const s_index = cp - S0;
     const l_index = s_index / N_COUNT;
     const v_index = (s_index % N_COUNT) / T_COUNT;
@@ -98,6 +101,9 @@ pub fn decomposeHangul(cp: CodePoint, result: *std.ArrayList(CodePoint)) !void {
     try result.append(V0 + v_index);
     if (t_index > 0) {
         try result.append(T0 + t_index);
+        log.trace("  Decomposed to 3 jamos: L+{}, V+{}, T+{}", .{l_index, v_index, t_index});
+    } else {
+        log.trace("  Decomposed to 2 jamos: L+{}, V+{}", .{l_index, v_index});
     }
 }
 
@@ -116,20 +122,26 @@ pub fn composeHangul(a: CodePoint, b: CodePoint) ?CodePoint {
 
 // Decompose a string of codepoints
 pub fn decompose(allocator: std.mem.Allocator, cps: []const CodePoint, nfc_data: *const NFCData) ![]CodePoint {
+    log.enterFn("decompose", "cps.len={}", .{cps.len});
+    
     var result = std.ArrayList(CodePoint).init(allocator);
     defer result.deinit();
     
-    for (cps) |cp| {
+    for (cps, 0..) |cp, i| {
+        log.trace("Decomposing codepoint[{}]: U+{X:0>4}", .{i, cp});
+        
         // Check for Hangul syllable
         if (isHangul(cp)) {
             try decomposeHangul(cp, &result);
         } else if (nfc_data.decomp.get(cp)) |decomposed| {
+            log.trace("  Found decomposition mapping: {} codepoints", .{decomposed.len});
             // Recursive decomposition
             const sub_decomposed = try decompose(allocator, decomposed, nfc_data);
             defer allocator.free(sub_decomposed);
             try result.appendSlice(sub_decomposed);
         } else {
             // No decomposition
+            log.trace("  No decomposition for U+{X:0>4}", .{cp});
             try result.append(cp);
         }
     }
@@ -165,7 +177,10 @@ fn canonicalOrder(cps: []CodePoint, nfc_data: *const NFCData) !void {
 
 // Compose a string of decomposed codepoints
 pub fn compose(allocator: std.mem.Allocator, decomposed: []const CodePoint, nfc_data: *const NFCData) ![]CodePoint {
+    log.enterFn("compose", "decomposed.len={}", .{decomposed.len});
+    
     if (decomposed.len == 0) {
+        log.debug("Empty input to compose, returning empty array", .{});
         return try allocator.alloc(CodePoint, 0);
     }
     
@@ -176,6 +191,8 @@ pub fn compose(allocator: std.mem.Allocator, decomposed: []const CodePoint, nfc_
     while (i < decomposed.len) {
         const cp = decomposed[i];
         const cc = nfc_data.getCombiningClass(cp);
+        
+        log.trace("Composing position {}: U+{X:0>4}, combining_class={}", .{i, cp, cc});
         
         // Try to compose with previous character
         if (result.items.len > 0 and cc == 0) {
@@ -212,12 +229,23 @@ pub fn compose(allocator: std.mem.Allocator, decomposed: []const CodePoint, nfc_
 
 // Main NFC function
 pub fn nfc(allocator: std.mem.Allocator, cps: []const CodePoint, nfc_data: *const NFCData) ![]CodePoint {
+    log.enterFn("nfc", "cps.len={}", .{cps.len});
+    const timer = log.Timer.start("nfc");
+    defer timer.stop();
+    
     // First decompose
+    log.debug("NFC: Starting decomposition of {} codepoints", .{cps.len});
     const decomposed = try decompose(allocator, cps, nfc_data);
     defer allocator.free(decomposed);
+    log.debug("NFC: Decomposition complete, {} codepoints", .{decomposed.len});
     
     // Then compose
-    return try compose(allocator, decomposed, nfc_data);
+    log.debug("NFC: Starting composition", .{});
+    const result = try compose(allocator, decomposed, nfc_data);
+    log.debug("NFC: Composition complete, {} codepoints", .{result.len});
+    
+    log.exitFn("nfc", "result.len={}", .{result.len});
+    return result;
 }
 
 // Check if codepoints need NFC normalization
