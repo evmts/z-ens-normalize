@@ -37,3 +37,6 @@ ENSNormalize.cs/
 ENSNormalize.java/
 go-ens-normalize/
 ens-normalize-python/
+
+# Include directory
+include/
