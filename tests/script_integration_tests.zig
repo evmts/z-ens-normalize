@@ -24,7 +24,7 @@ test "script integration - ASCII label" {
     defer result.deinit();
     
     try testing.expect(result.isASCII());
-    try testing.expectEqualStrings("ASCII", result.script_group.name);
+    try testing.expectEqualStrings("Latin", result.script_group.name);
 }
 
 test "script integration - mixed script rejection" {

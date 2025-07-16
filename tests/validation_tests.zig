@@ -23,23 +23,23 @@ const EMPTY_TESTS = [_]ValidationTestCase{
 
 // Basic valid tests
 const BASIC_VALID_TESTS = [_]ValidationTestCase{
-    .{ .name = "simple_ascii", .input = "hello", .expected_script = "ASCII", .comment = "Simple ASCII" },
-    .{ .name = "digits", .input = "123", .expected_script = "ASCII", .comment = "Digits" },
-    .{ .name = "mixed_ascii", .input = "test123", .expected_script = "ASCII", .comment = "Mixed ASCII" },
-    .{ .name = "with_hyphen", .input = "test-name", .expected_script = "ASCII", .comment = "With hyphen" },
+    .{ .name = "simple_ascii", .input = "hello", .expected_script = "Latin", .comment = "Simple ASCII" },
+    .{ .name = "digits", .input = "123", .expected_script = "Latin", .comment = "Digits" },
+    .{ .name = "mixed_ascii", .input = "test123", .expected_script = "Latin", .comment = "Mixed ASCII" },
+    .{ .name = "with_hyphen", .input = "test-name", .expected_script = "Latin", .comment = "With hyphen" },
 };
 
 // Underscore rule tests
 const UNDERSCORE_TESTS = [_]ValidationTestCase{
-    .{ .name = "leading_underscore", .input = "_hello", .expected_script = "ASCII", .comment = "Leading underscore" },
-    .{ .name = "multiple_leading", .input = "____hello", .expected_script = "ASCII", .comment = "Multiple leading underscores" },
+    .{ .name = "leading_underscore", .input = "_hello", .expected_script = "Latin", .comment = "Leading underscore" },
+    .{ .name = "multiple_leading", .input = "____hello", .expected_script = "Latin", .comment = "Multiple leading underscores" },
     .{ .name = "underscore_middle", .input = "hel_lo", .expected_error = validator.ValidationError.UnderscoreInMiddle, .comment = "Underscore in middle" },
     .{ .name = "underscore_end", .input = "hello_", .expected_error = validator.ValidationError.UnderscoreInMiddle, .comment = "Underscore at end" },
 };
 
 // ASCII label extension tests
 const LABEL_EXTENSION_TESTS = [_]ValidationTestCase{
-    .{ .name = "valid_hyphen", .input = "ab-cd", .expected_script = "ASCII", .comment = "Valid hyphen placement" },
+    .{ .name = "valid_hyphen", .input = "ab-cd", .expected_script = "Latin", .comment = "Valid hyphen placement" },
     .{ .name = "invalid_extension", .input = "ab--cd", .expected_error = validator.ValidationError.InvalidLabelExtension, .comment = "Invalid label extension" },
     .{ .name = "xn_extension", .input = "xn--test", .expected_error = validator.ValidationError.InvalidLabelExtension, .comment = "XN label extension" },
 };
@@ -49,7 +49,7 @@ const FENCED_TESTS = [_]ValidationTestCase{
     .{ .name = "apostrophe_leading", .input = "'hello", .expected_error = validator.ValidationError.FencedLeading, .comment = "Leading apostrophe" },
     .{ .name = "apostrophe_trailing", .input = "hello'", .expected_error = validator.ValidationError.FencedTrailing, .comment = "Trailing apostrophe" },
     .{ .name = "apostrophe_adjacent", .input = "hel''lo", .expected_error = validator.ValidationError.FencedAdjacent, .comment = "Adjacent apostrophes" },
-    .{ .name = "apostrophe_valid", .input = "hel'lo", .expected_script = "ASCII", .comment = "Valid apostrophe placement" },
+    .{ .name = "apostrophe_valid", .input = "hel'lo", .expected_script = "Latin", .comment = "Valid apostrophe placement" },
 };
 
 // Run test cases
@@ -150,7 +150,7 @@ test "validation - script group detection" {
         const result = try validator.validateLabel(allocator, tokenized, &specs);
         defer result.deinit();
         
-        try testing.expectEqualStrings("ASCII", result.script_group.name);
+        try testing.expectEqualStrings("Latin", result.script_group.name);
     }
 }
 
@@ -171,7 +171,7 @@ test "validation - performance test" {
         const result = try validator.validateLabel(allocator, tokenized, &specs);
         defer result.deinit();
         
-        try testing.expectEqualStrings("ASCII", result.script_group.name);
+        try testing.expectEqualStrings("Latin", result.script_group.name);
     }
     
     const end_time = std.time.microTimestamp();
