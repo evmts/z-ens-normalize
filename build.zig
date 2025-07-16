@@ -231,6 +231,61 @@ pub fn build(b: *std.Build) void {
     
     const run_nsm_validation_tests = b.addRunArtifact(nsm_validation_tests);
     
+    // Add official test vectors tests
+    const official_test_vectors = b.addTest(.{
+        .root_source_file = b.path("tests/official_test_vectors.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    official_test_vectors.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_official_test_vectors = b.addRunArtifact(official_test_vectors);
+    
+    // Add character classification tests
+    const character_classification_tests = b.addTest(.{
+        .root_source_file = b.path("tests/character_classification_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    character_classification_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_character_classification_tests = b.addRunArtifact(character_classification_tests);
+    
+    // Add NFC normalization tests
+    const nfc_normalization_tests = b.addTest(.{
+        .root_source_file = b.path("tests/nfc_normalization_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nfc_normalization_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_nfc_normalization_tests = b.addRunArtifact(nfc_normalization_tests);
+    
+    // Add simple debug test
+    const simple_debug_tests = b.addTest(.{
+        .root_source_file = b.path("tests/simple_debug.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    simple_debug_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_simple_debug_tests = b.addRunArtifact(simple_debug_tests);
+    
+    // Add NFC debug test
+    const nfc_debug_tests = b.addTest(.{
+        .root_source_file = b.path("tests/nfc_debug.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    nfc_debug_tests.root_module.addImport("ens_normalize", lib_mod);
+    
+    const run_nfc_debug_tests = b.addRunArtifact(nfc_debug_tests);
+    
+    // Add simple debug to the build
+    const debug_step = b.step("debug", "Run debug tests");
+    debug_step.dependOn(&run_simple_debug_tests.step);
+    debug_step.dependOn(&run_nfc_debug_tests.step);
+    
     // Update main test step
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_emoji_tests.step);
@@ -239,4 +294,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_confusable_tests.step);
     test_step.dependOn(&run_combining_mark_tests.step);
     test_step.dependOn(&run_nsm_validation_tests.step);
+    test_step.dependOn(&run_official_test_vectors.step);
+    test_step.dependOn(&run_character_classification_tests.step);
+    test_step.dependOn(&run_nfc_normalization_tests.step);
 }
