@@ -13,16 +13,30 @@ const log = @import("logger.zig");
 
 pub const OutputToken = struct {
     codepoints: []const CodePoint,
-    emoji: ?*const emoji.EmojiData,  // Optional emoji reference
+    emoji: ?emoji.EmojiData,  // Optional owned emoji data
     allocator: std.mem.Allocator,
     type: TokenType,
     
     pub fn init(allocator: std.mem.Allocator, codepoints: []const CodePoint, emoji_data: ?*const emoji.EmojiData) !OutputToken {
-        const token_type: TokenType = if (emoji_data != null) .emoji else .valid;
+        // Determine token type based on content
+        var token_type: TokenType = if (emoji_data != null) .emoji else .valid;
+        
+        // Check if this is a stop token (single dot)
+        if (codepoints.len == 1 and codepoints[0] == constants.CP_STOP) {
+            token_type = .stop;
+        }
+        
         log.trace("Creating OutputToken: type={s}, codepoints.len={}, emoji={}", .{@tagName(token_type), codepoints.len, emoji_data != null});
+        
+        // Create owned copy of emoji data if provided
+        const owned_emoji = if (emoji_data) |ed| emoji.EmojiData{
+            .emoji = try allocator.dupe(CodePoint, ed.emoji),
+            .no_fe0f = try allocator.dupe(CodePoint, ed.no_fe0f),
+        } else null;
+        
         return OutputToken{
             .codepoints = try allocator.dupe(CodePoint, codepoints),
-            .emoji = emoji_data,
+            .emoji = owned_emoji,
             .allocator = allocator,
             .type = token_type,
         };
@@ -30,6 +44,9 @@ pub const OutputToken = struct {
     
     pub fn deinit(self: OutputToken) void {
         self.allocator.free(self.codepoints);
+        if (self.emoji) |emoji_data| {
+            emoji_data.deinit(self.allocator);
+        }
     }
     
     pub fn isEmoji(self: OutputToken) bool {
@@ -832,10 +849,10 @@ test "token creation and cleanup" {
     try testing.expectEqual(TokenType.stop, stop_token.type);
     try testing.expectEqual(constants.CP_STOP, stop_token.data.stop.cp);
     
-    // Test ignored token
-    const ignored_token = Token.createIgnored(allocator, 0x200C);
+    // Test ignored token (using soft hyphen as example)
+    const ignored_token = Token.createIgnored(allocator, 0x00AD);
     try testing.expectEqual(TokenType.ignored, ignored_token.type);
-    try testing.expectEqual(@as(CodePoint, 0x200C), ignored_token.data.ignored.cp);
+    try testing.expectEqual(@as(CodePoint, 0x00AD), ignored_token.data.ignored.cp);
 }
 
 test "token input size calculation" {
