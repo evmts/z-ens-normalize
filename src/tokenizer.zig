@@ -462,6 +462,7 @@ pub fn streamingTokenize(
     while (i < input.len) {
         // Try to match emoji at current position
         if (emoji_map.findEmojiAt(allocator, input, i)) |emoji_match| {
+            defer allocator.free(emoji_match.cps_input); // Free the owned copy
             log.trace("Found emoji at position {}: {} codepoints, {} bytes", .{i, emoji_match.emoji_data.emoji.len, emoji_match.byte_len});
             
             // Flush accumulated text buffer
@@ -705,6 +706,7 @@ fn tokenizeInputWithMappingsImplWithData(
     while (i < input.len) {
         // Try to match emoji at current position
         if (emoji_map.findEmojiAt(allocator, input, i)) |emoji_match| {
+            defer allocator.free(emoji_match.cps_input); // Free the owned copy
             // Convert input to codepoints
             const input_cps = utils.str2cps(allocator, emoji_match.input) catch {
                 // If conversion fails, treat as regular characters

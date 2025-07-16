@@ -184,8 +184,8 @@ pub fn validateNameWithStreamData(
     _ = confusables_data;
     
     if (name.tokens.len == 0) {
-        log.debug("Empty name, returning empty label array", .{});
-        return try allocator.alloc(ValidatedLabel, 0);
+        log.err("Empty name is not allowed", .{});
+        return error_types.ProcessError.DisallowedSequence;
     }
     
     log.debug("Validating stream name with {} tokens", .{name.tokens.len});
@@ -302,6 +302,12 @@ pub fn validateNameWithStreamData(
         return error_types.ProcessError.DisallowedSequence;
     }
     
+    // Check if we ended up with no labels (which means empty input)
+    if (labels.items.len == 0) {
+        log.err("No labels found after validation", .{});
+        return error_types.ProcessError.DisallowedSequence;
+    }
+    
     log.info("Validated {} labels", .{labels.items.len});
     return labels.toOwnedSlice();
 }
@@ -344,6 +350,10 @@ fn validateLabelWithGroups(
     
     // Check NSM (Non-Spacing Mark) rules
     try checkNonSpacingMarks(allocator, label, specs, script_groups_data);
+    
+    // Determine script group and check for confusables
+    const script_group = try determineScriptGroup(allocator, label, script_groups_data);
+    try checkWholeScriptConfusables(allocator, label, script_group, script_groups_data);
     
     // Determine label type based on content
     const label_type = try determineLabelType(allocator, label);
@@ -564,6 +574,82 @@ fn isGreekCodepoint(cp: CodePoint) bool {
     // Greek and Coptic: U+0370 - U+03FF
     // Greek Extended: U+1F00 - U+1FFF
     return (cp >= 0x0370 and cp <= 0x03FF) or (cp >= 0x1F00 and cp <= 0x1FFF);
+}
+
+/// Determine the script group for a label (from C# DetermineGroup method)
+fn determineScriptGroup(allocator: std.mem.Allocator, label: TokenizedLabel, script_groups_data: *const script_groups.ScriptGroups) !*const script_groups.ScriptGroup {
+    // Get unique codepoints from non-emoji tokens
+    const unique_cps = try label.getCpsOfNotIgnoredText(allocator);
+    defer allocator.free(unique_cps);
+    
+    if (unique_cps.len == 0) {
+        return error_types.ProcessError.DisallowedSequence;
+    }
+    
+    // Remove duplicates
+    var unique_set = std.HashMap(CodePoint, void, std.hash_map.DefaultContext(CodePoint), std.hash_map.default_max_load_percentage).init(allocator);
+    defer unique_set.deinit();
+    
+    for (unique_cps) |cp| {
+        try unique_set.put(cp, {});
+    }
+    
+    var unique_list = std.ArrayList(CodePoint).init(allocator);
+    defer unique_list.deinit();
+    
+    var iterator = unique_set.iterator();
+    while (iterator.next()) |entry| {
+        try unique_list.append(entry.key_ptr.*);
+    }
+    
+    // Use script groups to determine the group
+    return script_groups_data.determineScriptGroup(unique_list.items, allocator) catch |err| {
+        log.err("Failed to determine script group: {}", .{err});
+        return error_types.ProcessError.Confused;
+    };
+}
+
+/// Check for whole script confusables (from C# CheckWhole method)
+fn checkWholeScriptConfusables(allocator: std.mem.Allocator, label: TokenizedLabel, group: *const script_groups.ScriptGroup, script_groups_data: *const script_groups.ScriptGroups) !void {
+    // Get unique codepoints from non-emoji tokens
+    const unique_cps = try label.getCpsOfNotIgnoredText(allocator);
+    defer allocator.free(unique_cps);
+    
+    if (unique_cps.len == 0) {
+        return; // No text to check
+    }
+    
+    // Load confusable data temporarily for checking
+    var confusable_data = try static_data_loader.loadConfusables(allocator);
+    defer confusable_data.deinit();
+    
+    // Check each unique codepoint for confusability
+    var confusable_groups = std.ArrayList(*const script_groups.ScriptGroup).init(allocator);
+    defer confusable_groups.deinit();
+    
+    for (unique_cps) |cp| {
+        // Find all script groups that contain this codepoint
+        const containing_groups = try script_groups_data.findGroupsContaining(cp, allocator);
+        defer allocator.free(containing_groups);
+        
+        // Check if this codepoint is confusable with other scripts
+        for (containing_groups) |containing_group| {
+            if (containing_group != group) {
+                // This codepoint belongs to a different script group
+                // Check if it's confusable with the primary group
+                log.err("Character U+{X:0>4} belongs to script '{}' but expected '{}'", .{cp, containing_group.name, group.name});
+                return error_types.ProcessError.Confused;
+            }
+        }
+    }
+    
+    // Additional check: ensure all codepoints are actually valid in the determined group
+    for (unique_cps) |cp| {
+        if (!group.containsCp(cp)) {
+            log.err("Character U+{X:0>4} not allowed in script '{}'", .{cp, group.name});
+            return error_types.ProcessError.Confused;
+        }
+    }
 }
 
 test "validateLabel basic functionality" {
