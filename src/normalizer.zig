@@ -45,8 +45,8 @@ pub const EnsNameNormalizer = struct {
         self.emoji_map.deinit();
     }
     
-    pub fn tokenize(self: *const EnsNameNormalizer, input: []const u8) !tokenizer.TokenizedName {
-        return tokenizer.TokenizedName.fromInputWithData(
+    pub fn tokenize(self: *const EnsNameNormalizer, input: []const u8) !tokenizer.StreamTokenizedName {
+        return tokenizer.StreamTokenizedName.fromInputWithData(
             self.allocator, 
             input, 
             &self.specs, 
@@ -59,7 +59,7 @@ pub const EnsNameNormalizer = struct {
     
     pub fn process(self: *const EnsNameNormalizer, input: []const u8) !ProcessedName {
         const tokenized = try self.tokenize(input);
-        const labels = try validate.validateNameWithData(
+        const labels = try validate.validateNameWithStreamData(
             self.allocator, 
             tokenized, 
             &self.specs,
@@ -93,7 +93,7 @@ pub const EnsNameNormalizer = struct {
 
 pub const ProcessedName = struct {
     labels: []validate.ValidatedLabel,
-    tokenized: tokenizer.TokenizedName,
+    tokenized: tokenizer.StreamTokenizedName,
     allocator: std.mem.Allocator,
     
     pub fn deinit(self: ProcessedName) void {
@@ -105,16 +105,62 @@ pub const ProcessedName = struct {
     }
     
     pub fn normalize(self: *const ProcessedName) ![]u8 {
-        return normalizeTokens(self.allocator, self.tokenized.tokens);
+        return normalizeStreamTokens(self.allocator, self.tokenized.tokens);
     }
     
     pub fn beautify(self: *const ProcessedName) ![]u8 {
-        return beautifyTokens(self.allocator, self.tokenized.tokens);
+        return beautifyStreamTokens(self.allocator, self.tokenized.tokens);
     }
 };
 
+// Stream token processing functions
+fn normalizeStreamTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.OutputToken) ![]u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+    
+    for (token_list) |token| {
+        // Convert codepoints to UTF-8 and append to result
+        for (token.codepoints) |cp| {
+            const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+            const old_len = result.items.len;
+            try result.resize(old_len + utf8_len);
+            _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+        }
+    }
+    
+    return result.toOwnedSlice();
+}
+
+fn beautifyStreamTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.OutputToken) ![]u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    defer result.deinit();
+    
+    for (token_list) |token| {
+        if (token.isEmoji()) {
+            // For emoji, use fully-qualified form with FE0F
+            const emoji_cps = token.emoji.?.emoji;
+            for (emoji_cps) |cp| {
+                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+                const old_len = result.items.len;
+                try result.resize(old_len + utf8_len);
+                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+            }
+        } else {
+            // For text, use normalized form
+            for (token.codepoints) |cp| {
+                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+                const old_len = result.items.len;
+                try result.resize(old_len + utf8_len);
+                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+            }
+        }
+    }
+    
+    return result.toOwnedSlice();
+}
+
 // Convenience functions that use default normalizer
-pub fn tokenize(allocator: std.mem.Allocator, input: []const u8) !tokenizer.TokenizedName {
+pub fn tokenize(allocator: std.mem.Allocator, input: []const u8) !tokenizer.StreamTokenizedName {
     var normalizer = try EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     return normalizer.tokenize(input);

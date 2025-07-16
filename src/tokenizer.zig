@@ -14,6 +14,36 @@ const emoji = @import("emoji.zig");
 // Note: Unlike some implementations, our tokenizer can return errors for memory allocation
 // failures. The reference JavaScript implementation never throws, but in Zig we need to
 // handle allocation failures properly.
+// Simplified output token following reference implementation patterns
+// Based on Go implementation's OutputToken structure
+pub const OutputToken = struct {
+    codepoints: []const CodePoint,
+    emoji: ?*const emoji.EmojiData,  // Optional emoji reference
+    allocator: std.mem.Allocator,
+    
+    pub fn init(allocator: std.mem.Allocator, codepoints: []const CodePoint, emoji_data: ?*const emoji.EmojiData) !OutputToken {
+        return OutputToken{
+            .codepoints = try allocator.dupe(CodePoint, codepoints),
+            .emoji = emoji_data,
+            .allocator = allocator,
+        };
+    }
+    
+    pub fn deinit(self: OutputToken) void {
+        self.allocator.free(self.codepoints);
+    }
+    
+    pub fn isEmoji(self: OutputToken) bool {
+        return self.emoji != null;
+    }
+    
+    pub fn isText(self: OutputToken) bool {
+        return self.emoji == null;
+    }
+};
+
+// Legacy token types for backward compatibility during transition
+// TODO: Remove after TASK 2 is complete
 pub const TokenType = enum {
     valid,
     mapped,
@@ -332,6 +362,161 @@ pub const TokenizedName = struct {
         const tokens = try tokenizeInputWithMappingsImplWithData(allocator, input, mappings, emoji_map, nfc_data, apply_nfc);
         
         return TokenizedName{
+            .input = try allocator.dupe(u8, input),
+            .tokens = tokens,
+            .allocator = allocator,
+        };
+    }
+};
+
+// New streaming tokenization following Go implementation pattern
+// This will replace the complex tokenization pipeline in TASK 2
+pub fn streamingTokenize(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    mappings: *const character_mappings.CharacterMappings,
+    emoji_map: *const emoji.EmojiMap,
+    nfc_data: *const nfc.NFCData,
+    apply_nfc: bool,
+) ![]OutputToken {
+    var tokens = std.ArrayList(OutputToken).init(allocator);
+    defer tokens.deinit();
+    
+    var text_buffer = std.ArrayList(CodePoint).init(allocator);
+    defer text_buffer.deinit();
+    
+    // Helper function to flush text buffer as token
+    const flushTextBuffer = struct {
+        fn call(
+            alloc: std.mem.Allocator,
+            buffer: *std.ArrayList(CodePoint),
+            token_list: *std.ArrayList(OutputToken),
+            nfc_data_ref: *const nfc.NFCData,
+            should_apply_nfc: bool,
+        ) !void {
+            if (buffer.items.len == 0) return;
+            
+            var codepoints = buffer.items;
+            
+            // Apply NFC if requested
+            if (should_apply_nfc) {
+                codepoints = nfc.nfc(alloc, buffer.items, nfc_data_ref) catch buffer.items;
+            }
+            
+            const token = try OutputToken.init(alloc, codepoints, null);
+            try token_list.append(token);
+            
+            // Free NFC result if it was allocated
+            if (should_apply_nfc and codepoints.ptr != buffer.items.ptr) {
+                alloc.free(codepoints);
+            }
+            
+            buffer.clearRetainingCapacity();
+        }
+    }.call;
+    
+    // Process input character by character with emoji priority
+    var i: usize = 0;
+    while (i < input.len) {
+        // Try to match emoji at current position
+        if (emoji_map.findEmojiAt(allocator, input, i)) |emoji_match| {
+            // Flush accumulated text buffer
+            try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
+            
+            // Add emoji token
+            const emoji_token = try OutputToken.init(allocator, emoji_match.emoji_data.no_fe0f, &emoji_match.emoji_data);
+            try tokens.append(emoji_token);
+            
+            i += emoji_match.byte_len;
+            continue;
+        }
+        
+        // Process regular character
+        const char_len = std.unicode.utf8ByteSequenceLength(input[i]) catch 1;
+        if (i + char_len > input.len) break;
+        
+        const cp_bytes = input[i..i + char_len];
+        const cp = std.unicode.utf8Decode(cp_bytes) catch {
+            // Invalid UTF-8, add replacement character to buffer
+            try text_buffer.append(0xFFFD);
+            i += 1;
+            continue;
+        };
+        
+        // Classify character and handle accordingly
+        if (cp == constants.CP_STOP) {
+            // Flush text buffer and add stop character as separate token
+            try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
+            const stop_token = try OutputToken.init(allocator, &[_]CodePoint{cp}, null);
+            try tokens.append(stop_token);
+        } else if (mappings.isIgnored(cp)) {
+            // Ignored characters are not added to buffer
+        } else if (mappings.getMapped(cp)) |mapped| {
+            // Add mapped codepoints to buffer
+            try text_buffer.appendSlice(mapped);
+        } else if (mappings.isValid(cp)) {
+            // Add valid character to buffer
+            try text_buffer.append(cp);
+        } else {
+            // Disallowed character - for now, add to buffer (validation will catch it)
+            try text_buffer.append(cp);
+        }
+        
+        i += char_len;
+    }
+    
+    // Flush any remaining text in buffer
+    try flushTextBuffer(allocator, &text_buffer, &tokens, nfc_data, apply_nfc);
+    
+    return tokens.toOwnedSlice();
+}
+
+// New simplified TokenizedName using OutputTokens
+pub const StreamTokenizedName = struct {
+    input: []const u8,
+    tokens: []OutputToken,
+    allocator: std.mem.Allocator,
+    
+    pub fn init(allocator: std.mem.Allocator, input: []const u8) StreamTokenizedName {
+        return StreamTokenizedName{
+            .input = input,
+            .tokens = &[_]OutputToken{},
+            .allocator = allocator,
+        };
+    }
+    
+    pub fn deinit(self: StreamTokenizedName) void {
+        for (self.tokens) |token| {
+            token.deinit();
+        }
+        self.allocator.free(self.tokens);
+        self.allocator.free(self.input);
+    }
+    
+    pub fn isEmpty(self: StreamTokenizedName) bool {
+        return self.tokens.len == 0;
+    }
+    
+    pub fn fromInputWithData(
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        _: *const code_points.CodePointsSpecs,
+        mappings: *const character_mappings.CharacterMappings,
+        emoji_map: *const emoji.EmojiMap,
+        nfc_data: *const nfc.NFCData,
+        apply_nfc: bool,
+    ) !StreamTokenizedName {
+        if (input.len == 0) {
+            return StreamTokenizedName{
+                .input = try allocator.dupe(u8, ""),
+                .tokens = &[_]OutputToken{},
+                .allocator = allocator,
+            };
+        }
+        
+        const tokens = try streamingTokenize(allocator, input, mappings, emoji_map, nfc_data, apply_nfc);
+        
+        return StreamTokenizedName{
             .input = try allocator.dupe(u8, input),
             .tokens = tokens,
             .allocator = allocator,

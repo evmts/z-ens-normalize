@@ -158,6 +158,63 @@ pub fn validateNameWithData(
     return labels.toOwnedSlice();
 }
 
+pub fn validateNameWithStreamData(
+    allocator: std.mem.Allocator,
+    name: tokenizer.StreamTokenizedName,
+    specs: *const code_points.CodePointsSpecs,
+    script_groups_data: *const script_groups.ScriptGroups,
+    confusables_data: *const confusables.ConfusableData,
+) ![]ValidatedLabel {
+    _ = script_groups_data;
+    _ = confusables_data;
+    
+    if (name.tokens.len == 0) {
+        return try allocator.alloc(ValidatedLabel, 0);
+    }
+    
+    // For now, create a simple implementation that treats the entire name as one label
+    // TODO: Implement proper label splitting on stop tokens
+    var labels = std.ArrayList(ValidatedLabel).init(allocator);
+    defer labels.deinit();
+    
+    // Convert OutputTokens to legacy format for validation
+    // This is temporary during TASK 2 transition
+    var legacy_tokens = std.ArrayList(tokenizer.Token).init(allocator);
+    defer {
+        for (legacy_tokens.items) |token| {
+            token.deinit();
+        }
+        legacy_tokens.deinit();
+    }
+    
+    for (name.tokens) |output_token| {
+        if (output_token.isEmoji()) {
+            // Create emoji token
+            const emoji_token = try tokenizer.Token.createEmoji(
+                allocator,
+                output_token.codepoints,
+                output_token.emoji.?.emoji,
+                output_token.codepoints
+            );
+            try legacy_tokens.append(emoji_token);
+        } else {
+            // Create valid token (assuming all text is valid for now)
+            const valid_token = try tokenizer.Token.createValid(allocator, output_token.codepoints);
+            try legacy_tokens.append(valid_token);
+        }
+    }
+    
+    const label = TokenizedLabel{
+        .tokens = legacy_tokens.items,
+        .allocator = allocator,
+    };
+    
+    const validated = try validateLabel(allocator, label, specs);
+    try labels.append(validated);
+    
+    return labels.toOwnedSlice();
+}
+
 pub fn validateLabel(
     allocator: std.mem.Allocator,
     label: TokenizedLabel,
