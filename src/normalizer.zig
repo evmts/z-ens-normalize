@@ -13,6 +13,7 @@ const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
 const nfc = @import("nfc.zig");
 const emoji = @import("emoji.zig");
+const log = @import("logger.zig");
 
 pub const EnsNameNormalizer = struct {
     specs: code_points.CodePointsSpecs,
@@ -24,6 +25,10 @@ pub const EnsNameNormalizer = struct {
     allocator: std.mem.Allocator,
     
     pub fn init(allocator: std.mem.Allocator) !EnsNameNormalizer {
+        log.debug("Initializing EnsNameNormalizer", .{});
+        const timer = log.Timer.start("EnsNameNormalizer.init");
+        defer timer.stop();
+        
         const normalizer = EnsNameNormalizer{
             .specs = code_points.CodePointsSpecs.init(allocator),
             .character_mappings = try static_data_loader.loadCharacterMappings(allocator),
@@ -33,6 +38,8 @@ pub const EnsNameNormalizer = struct {
             .emoji_map = try static_data_loader.loadEmoji(allocator),
             .allocator = allocator,
         };
+        
+        log.info("EnsNameNormalizer initialized successfully", .{});
         return normalizer;
     }
     
@@ -46,7 +53,10 @@ pub const EnsNameNormalizer = struct {
     }
     
     pub fn tokenize(self: *const EnsNameNormalizer, input: []const u8) !tokenizer.StreamTokenizedName {
-        return tokenizer.StreamTokenizedName.fromInputWithData(
+        log.enterFn("EnsNameNormalizer.tokenize", "input.len={}", .{input.len});
+        log.unicodeDebug("Input to tokenize", input);
+        
+        const result = tokenizer.StreamTokenizedName.fromInputWithData(
             self.allocator, 
             input, 
             &self.specs, 
@@ -54,18 +64,39 @@ pub const EnsNameNormalizer = struct {
             &self.emoji_map,
             &self.nfc_data,
             true
-        );
+        ) catch |e| {
+            log.errTrace("EnsNameNormalizer.tokenize", e);
+            return e;
+        };
+        
+        log.debug("Tokenization complete: {} tokens", .{result.tokens.len});
+        log.exitFn("EnsNameNormalizer.tokenize", "tokens.len={}", .{result.tokens.len});
+        return result;
     }
     
     pub fn process(self: *const EnsNameNormalizer, input: []const u8) !ProcessedName {
+        log.enterFn("EnsNameNormalizer.process", "input.len={}", .{input.len});
+        log.unicodeDebug("Processing ENS name", input);
+        const timer = log.Timer.start("EnsNameNormalizer.process");
+        defer timer.stop();
+        
         const tokenized = try self.tokenize(input);
-        const labels = try validate.validateNameWithStreamData(
+        log.debug("Tokenization complete, validating {} tokens", .{tokenized.tokens.len});
+        
+        const labels = validate.validateNameWithStreamData(
             self.allocator, 
             tokenized, 
             &self.specs,
             &self.script_groups,
             &self.confusables
-        );
+        ) catch |e| {
+            log.errTrace("EnsNameNormalizer.process validation", e);
+            tokenized.deinit();
+            return e;
+        };
+        
+        log.info("Processed ENS name: {} labels from {} tokens", .{labels.len, tokenized.tokens.len});
+        log.exitFn("EnsNameNormalizer.process", "labels.len={}", .{labels.len});
         
         return ProcessedName{
             .labels = labels,
@@ -75,15 +106,33 @@ pub const EnsNameNormalizer = struct {
     }
     
     pub fn normalize(self: *const EnsNameNormalizer, input: []const u8) ![]u8 {
+        log.enterFn("EnsNameNormalizer.normalize", "input.len={}", .{input.len});
+        log.unicodeDebug("Normalizing ENS name", input);
+        const timer = log.Timer.start("EnsNameNormalizer.normalize");
+        defer timer.stop();
+        
         const processed = try self.process(input);
         defer processed.deinit();
-        return processed.normalize();
+        
+        const result = try processed.normalize();
+        log.unicodeDebug("Normalized result", result);
+        log.exitFn("EnsNameNormalizer.normalize", "result.len={}", .{result.len});
+        return result;
     }
     
     pub fn beautify_fn(self: *const EnsNameNormalizer, input: []const u8) ![]u8 {
+        log.enterFn("EnsNameNormalizer.beautify_fn", "input.len={}", .{input.len});
+        log.unicodeDebug("Beautifying ENS name", input);
+        const timer = log.Timer.start("EnsNameNormalizer.beautify_fn");
+        defer timer.stop();
+        
         const processed = try self.process(input);
         defer processed.deinit();
-        return processed.beautify();
+        
+        const result = try processed.beautify();
+        log.unicodeDebug("Beautified result", result);
+        log.exitFn("EnsNameNormalizer.beautify_fn", "result.len={}", .{result.len});
+        return result;
     }
     
     pub fn default(allocator: std.mem.Allocator) !EnsNameNormalizer {
@@ -115,48 +164,81 @@ pub const ProcessedName = struct {
 
 // Stream token processing functions
 fn normalizeStreamTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.OutputToken) ![]u8 {
+    log.enterFn("normalizeStreamTokens", "token_list.len={}", .{token_list.len});
     var result = std.ArrayList(u8).init(allocator);
     defer result.deinit();
     
-    for (token_list) |token| {
+    for (token_list, 0..) |token, i| {
+        log.trace("Processing token {}: type={s}, codepoints.len={}", .{i, @tagName(token.type), token.codepoints.len});
+        
         // Convert codepoints to UTF-8 and append to result
         for (token.codepoints) |cp| {
-            const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+            log.trace("  Encoding codepoint U+{X:0>4}", .{cp});
+            const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch {
+                log.warn("Invalid codepoint U+{X:0>4}, skipping", .{cp});
+                continue;
+            };
             const old_len = result.items.len;
             try result.resize(old_len + utf8_len);
-            _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+            _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch {
+                log.warn("Failed to encode codepoint U+{X:0>4}, skipping", .{cp});
+                continue;
+            };
         }
     }
     
-    return result.toOwnedSlice();
+    const output = try result.toOwnedSlice();
+    log.exitFn("normalizeStreamTokens", "output.len={}", .{output.len});
+    return output;
 }
 
 fn beautifyStreamTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.OutputToken) ![]u8 {
+    log.enterFn("beautifyStreamTokens", "token_list.len={}", .{token_list.len});
     var result = std.ArrayList(u8).init(allocator);
     defer result.deinit();
     
-    for (token_list) |token| {
+    for (token_list, 0..) |token, i| {
         if (token.isEmoji()) {
             // For emoji, use fully-qualified form with FE0F
             const emoji_cps = token.emoji.?.emoji;
+            log.trace("Processing emoji token {}: {} codepoints", .{i, emoji_cps.len});
+            
             for (emoji_cps) |cp| {
-                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+                log.trace("  Encoding emoji codepoint U+{X:0>4}", .{cp});
+                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch {
+                    log.warn("Invalid emoji codepoint U+{X:0>4}, skipping", .{cp});
+                    continue;
+                };
                 const old_len = result.items.len;
                 try result.resize(old_len + utf8_len);
-                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch {
+                    log.warn("Failed to encode emoji codepoint U+{X:0>4}, skipping", .{cp});
+                    continue;
+                };
             }
         } else {
             // For text, use normalized form
+            log.trace("Processing text token {}: type={s}, {} codepoints", .{i, @tagName(token.type), token.codepoints.len});
+            
             for (token.codepoints) |cp| {
-                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch continue;
+                log.trace("  Encoding text codepoint U+{X:0>4}", .{cp});
+                const utf8_len = std.unicode.utf8CodepointSequenceLength(@as(u21, @intCast(cp))) catch {
+                    log.warn("Invalid text codepoint U+{X:0>4}, skipping", .{cp});
+                    continue;
+                };
                 const old_len = result.items.len;
                 try result.resize(old_len + utf8_len);
-                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch continue;
+                _ = std.unicode.utf8Encode(@as(u21, @intCast(cp)), result.items[old_len..]) catch {
+                    log.warn("Failed to encode text codepoint U+{X:0>4}, skipping", .{cp});
+                    continue;
+                };
             }
         }
     }
     
-    return result.toOwnedSlice();
+    const output = try result.toOwnedSlice();
+    log.exitFn("beautifyStreamTokens", "output.len={}", .{output.len});
+    return output;
 }
 
 // Convenience functions that use default normalizer
@@ -236,6 +318,7 @@ fn beautifyTokens(allocator: std.mem.Allocator, token_list: []const tokenizer.To
 }
 
 test "EnsNameNormalizer basic functionality" {
+    log.setLogLevel(.trace); // Enable full logging for tests
     const testing = std.testing;
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
