@@ -111,20 +111,20 @@ const IGNORED_CHARACTERS_TESTS = [_]TokenizationTestCase{
         .input = "te\u{200C}st",
         .expected_tokens = &[_]ExpectedToken{
             .{ .type = .valid, .cps = &[_]u32{ 't', 'e' } },
-            .{ .type = .ignored, .cp = 0x200C },
+            .{ .type = .disallowed, .cp = 0x200C },
             .{ .type = .valid, .cps = &[_]u32{ 's', 't' } },
         },
-        .comment = "Zero width non-joiner should be ignored",
+        .comment = "Zero width non-joiner should be disallowed",
     },
     .{
-        .name = "zero_width_joiner",
+        .name = "zero_width_joiner_outside_emoji",
         .input = "te\u{200D}st",
         .expected_tokens = &[_]ExpectedToken{
             .{ .type = .valid, .cps = &[_]u32{ 't', 'e' } },
-            .{ .type = .ignored, .cp = 0x200D },
+            .{ .type = .disallowed, .cp = 0x200D },
             .{ .type = .valid, .cps = &[_]u32{ 's', 't' } },
         },
-        .comment = "Zero width joiner should be ignored",
+        .comment = "Zero width joiner outside emoji should be disallowed",
     },
     .{
         .name = "zero_width_no_break_space",
