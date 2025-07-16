@@ -85,16 +85,28 @@ pub fn loadNFC(allocator: std.mem.Allocator) !nfc.NFCData {
         try nfc_data.decomp.put(cp, decomp);
     }
     
-    // Note: The ranks field in nf.zon appears to be arrays of codepoints
-    // grouped by their combining class. We'll need to determine the actual
-    // combining class values from the Unicode standard or reference implementation.
-    // For now, we'll leave combining_class empty as it might not be needed
-    // for basic normalization.
-    
-    // Load NFC check from spec data
     for (spec_data.nfc_check) |cp| {
         try nfc_data.nfc_check.put(@as(CodePoint, cp), {});
     }
+    
+    // Generate recomposition table from decomposition data
+    // For each decomposition A -> [B, C], add recomposition [B, C] -> A
+    for (nf_data.decomp) |entry| {
+        const composed_cp = @as(CodePoint, entry[0]);
+        const decomp_array = entry[1];
+        
+        // Only handle canonical decompositions of exactly 2 characters
+        if (decomp_array.len == 2) {
+            const first = @as(CodePoint, decomp_array[0]);
+            const second = @as(CodePoint, decomp_array[1]);
+            const pair = nfc.NFCData.CodePointPair{ .first = first, .second = second };
+            
+            // Add to recomposition table
+            try nfc_data.recomp.put(pair, composed_cp);
+        }
+    }
+    
+    // std.debug.print("loadNFC: Generated {} recomposition entries\n", .{nfc_data.recomp.count()});
     
     return nfc_data;
 }
