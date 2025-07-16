@@ -43,7 +43,7 @@ pub fn main() !void {
         defer allocator.free(result);
         
         const passed = std.mem.eql(u8, result, expected);
-        std.debug.print("\nTest 3: '{s}' -> '{s}' [{}]\n", .{input, result, if (passed) "PASS" else "FAIL"});
+        std.debug.print("\nTest 3: '{s}' -> '{s}' [{s}]\n", .{input, result, if (passed) "PASS" else "FAIL"});
         std.debug.print("  (ξ in Greek context, no replacement)\n", .{});
     }
     
@@ -69,7 +69,7 @@ pub fn main() !void {
         defer allocator.free(result);
         
         const passed = std.mem.eql(u8, result, expected);
-        std.debug.print("\nTest 5: '{s}' -> '{s}' [{}]\n", .{input, result, if (passed) "PASS" else "FAIL"});
+        std.debug.print("\nTest 5: '{s}' -> '{s}' [{s}]\n", .{input, result, if (passed) "PASS" else "FAIL"});
         std.debug.print("  (Mixed: ASCII w/ξ, Greek single ξ, Greek w/ξ)\n", .{});
     }
     
