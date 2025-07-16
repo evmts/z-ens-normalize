@@ -9,29 +9,63 @@ const join = @import("join.zig");
 const tokenizer = @import("tokenizer.zig");
 const character_mappings = @import("character_mappings.zig");
 const static_data_loader = @import("static_data_loader.zig");
+const script_groups = @import("script_groups.zig");
+const confusables = @import("confusables.zig");
+const nfc = @import("nfc.zig");
+const emoji = @import("emoji.zig");
 
 pub const EnsNameNormalizer = struct {
     specs: code_points.CodePointsSpecs,
+    character_mappings: character_mappings.CharacterMappings,
+    script_groups: script_groups.ScriptGroups,
+    confusables: confusables.ConfusableData,
+    nfc_data: nfc.NFCData,
+    emoji_map: emoji.EmojiMap,
     allocator: std.mem.Allocator,
     
-    pub fn init(allocator: std.mem.Allocator, specs: code_points.CodePointsSpecs) EnsNameNormalizer {
-        return EnsNameNormalizer{
-            .specs = specs,
+    pub fn init(allocator: std.mem.Allocator) !EnsNameNormalizer {
+        const normalizer = EnsNameNormalizer{
+            .specs = code_points.CodePointsSpecs.init(allocator),
+            .character_mappings = try static_data_loader.loadCharacterMappings(allocator),
+            .script_groups = try static_data_loader.loadScriptGroups(allocator),
+            .confusables = try static_data_loader.loadConfusables(allocator),
+            .nfc_data = try static_data_loader.loadNFC(allocator),
+            .emoji_map = try static_data_loader.loadEmoji(allocator),
             .allocator = allocator,
         };
+        return normalizer;
     }
     
     pub fn deinit(self: *EnsNameNormalizer) void {
         self.specs.deinit();
+        self.character_mappings.deinit();
+        self.script_groups.deinit();
+        self.confusables.deinit();
+        self.nfc_data.deinit();
+        self.emoji_map.deinit();
     }
     
     pub fn tokenize(self: *const EnsNameNormalizer, input: []const u8) !tokenizer.TokenizedName {
-        return tokenizer.TokenizedName.fromInput(self.allocator, input, &self.specs, true);
+        return tokenizer.TokenizedName.fromInputWithData(
+            self.allocator, 
+            input, 
+            &self.specs, 
+            &self.character_mappings,
+            &self.emoji_map,
+            &self.nfc_data,
+            true
+        );
     }
     
     pub fn process(self: *const EnsNameNormalizer, input: []const u8) !ProcessedName {
         const tokenized = try self.tokenize(input);
-        const labels = try validate.validateName(self.allocator, tokenized, &self.specs);
+        const labels = try validate.validateNameWithData(
+            self.allocator, 
+            tokenized, 
+            &self.specs,
+            &self.script_groups,
+            &self.confusables
+        );
         
         return ProcessedName{
             .labels = labels,
@@ -52,8 +86,8 @@ pub const EnsNameNormalizer = struct {
         return processed.beautify();
     }
     
-    pub fn default(allocator: std.mem.Allocator) EnsNameNormalizer {
-        return EnsNameNormalizer.init(allocator, code_points.CodePointsSpecs.init(allocator));
+    pub fn default(allocator: std.mem.Allocator) !EnsNameNormalizer {
+        return EnsNameNormalizer.init(allocator);
     }
 };
 
@@ -81,29 +115,27 @@ pub const ProcessedName = struct {
 
 // Convenience functions that use default normalizer
 pub fn tokenize(allocator: std.mem.Allocator, input: []const u8) !tokenizer.TokenizedName {
-    var normalizer = EnsNameNormalizer.default(allocator);
+    var normalizer = try EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     return normalizer.tokenize(input);
 }
 
 pub fn process(allocator: std.mem.Allocator, input: []const u8) !ProcessedName {
-    var normalizer = EnsNameNormalizer.default(allocator);
+    var normalizer = try EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     return normalizer.process(input);
 }
 
 pub fn normalize(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    // Use character mappings directly for better performance
-    const tokenized = try tokenizer.TokenizedName.fromInput(allocator, input, &code_points.CodePointsSpecs.init(allocator), false);
-    defer tokenized.deinit();
-    return normalizeTokens(allocator, tokenized.tokens);
+    var normalizer = try EnsNameNormalizer.default(allocator);
+    defer normalizer.deinit();
+    return normalizer.normalize(input);
 }
 
 pub fn beautify(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    // Use character mappings directly for better performance
-    const tokenized = try tokenizer.TokenizedName.fromInput(allocator, input, &code_points.CodePointsSpecs.init(allocator), false);
-    defer tokenized.deinit();
-    return beautifyTokens(allocator, tokenized.tokens);
+    var normalizer = try EnsNameNormalizer.default(allocator);
+    defer normalizer.deinit();
+    return normalizer.beautify_fn(input);
 }
 
 // Token processing functions
@@ -163,7 +195,7 @@ test "EnsNameNormalizer basic functionality" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = EnsNameNormalizer.default(allocator);
+    var normalizer = try EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     const input = "hello.eth";

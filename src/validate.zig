@@ -6,6 +6,8 @@ const utils = @import("utils.zig");
 const tokenizer = @import("tokenizer.zig");
 const code_points = @import("code_points.zig");
 const error_types = @import("error.zig");
+const script_groups = @import("script_groups.zig");
+const confusables = @import("confusables.zig");
 
 pub const LabelType = union(enum) {
     ascii,
@@ -106,6 +108,36 @@ pub fn validateName(
     name: tokenizer.TokenizedName,
     specs: *const code_points.CodePointsSpecs,
 ) ![]ValidatedLabel {
+    if (name.tokens.len == 0) {
+        return try allocator.alloc(ValidatedLabel, 0);
+    }
+    
+    // For now, create a simple implementation that treats the entire name as one label
+    // The actual implementation would need to split on stop tokens
+    var labels = std.ArrayList(ValidatedLabel).init(allocator);
+    defer labels.deinit();
+    
+    const label = TokenizedLabel{
+        .tokens = name.tokens,
+        .allocator = allocator,
+    };
+    
+    const validated = try validateLabel(allocator, label, specs);
+    try labels.append(validated);
+    
+    return labels.toOwnedSlice();
+}
+
+pub fn validateNameWithData(
+    allocator: std.mem.Allocator,
+    name: tokenizer.TokenizedName,
+    specs: *const code_points.CodePointsSpecs,
+    script_groups_data: *const script_groups.ScriptGroups,
+    confusables_data: *const confusables.ConfusableData,
+) ![]ValidatedLabel {
+    _ = script_groups_data;
+    _ = confusables_data;
+    
     if (name.tokens.len == 0) {
         return try allocator.alloc(ValidatedLabel, 0);
     }

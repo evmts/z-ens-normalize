@@ -8,7 +8,7 @@ const error_types = @import("error.zig");
 const character_mappings = @import("character_mappings.zig");
 const static_data_loader = @import("static_data_loader.zig");
 const nfc = @import("nfc.zig");
-const emoji_mod = @import("emoji.zig");
+const emoji = @import("emoji.zig");
 
 // Token types based on ENSIP-15 specification
 // Note: Unlike some implementations, our tokenizer can return errors for memory allocation
@@ -55,7 +55,7 @@ pub const Token = struct {
         },
         emoji: struct {
             input: []const CodePoint,  // Changed from []const u8 to match reference
-            emoji: []const CodePoint,   // fully-qualified emoji
+            emoji_data: []const CodePoint,   // fully-qualified emoji
             cps: []const CodePoint,     // output (fe0f filtered) - renamed from cps_no_fe0f
         },
         nfc: struct {
@@ -78,7 +78,7 @@ pub const Token = struct {
                 .mapped => .{ .mapped = .{ .cp = 0, .cps = &[_]CodePoint{} } },
                 .ignored => .{ .ignored = .{ .cp = 0 } },
                 .disallowed => .{ .disallowed = .{ .cp = 0 } },
-                .emoji => .{ .emoji = .{ .input = &[_]CodePoint{}, .emoji = &[_]CodePoint{}, .cps = &[_]CodePoint{} } },
+                .emoji => .{ .emoji = .{ .input = &[_]CodePoint{}, .emoji_data = &[_]CodePoint{}, .cps = &[_]CodePoint{} } },
                 .nfc => .{ .nfc = .{ .input = &[_]CodePoint{}, .cps = &[_]CodePoint{}, .tokens0 = null, .tokens = null } },
                 .stop => .{ .stop = .{ .cp = constants.CP_STOP } },
             },
@@ -92,7 +92,7 @@ pub const Token = struct {
             .mapped => |data| self.allocator.free(data.cps),
             .emoji => |data| {
                 self.allocator.free(data.input);
-                self.allocator.free(data.emoji);
+                self.allocator.free(data.emoji_data);
                 self.allocator.free(data.cps);
             },
             .nfc => |data| {
@@ -204,14 +204,14 @@ pub const Token = struct {
     pub fn createEmoji(
         allocator: std.mem.Allocator,
         input: []const CodePoint,
-        emoji: []const CodePoint,
+        emoji_data: []const CodePoint,
         cps: []const CodePoint  // fe0f filtered
     ) !Token {
         return Token{
             .type = .emoji,
             .data = .{ .emoji = .{
                 .input = try allocator.dupe(CodePoint, input),
-                .emoji = try allocator.dupe(CodePoint, emoji),
+                .emoji_data = try allocator.dupe(CodePoint, emoji_data),
                 .cps = try allocator.dupe(CodePoint, cps),
             }},
             .allocator = allocator,
@@ -304,6 +304,32 @@ pub const TokenizedName = struct {
         }
         
         const tokens = try tokenizeInputWithMappingsImpl(allocator, input, mappings, apply_nfc);
+        
+        return TokenizedName{
+            .input = try allocator.dupe(u8, input),
+            .tokens = tokens,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn fromInputWithData(
+        allocator: std.mem.Allocator,
+        input: []const u8,
+        _: *const code_points.CodePointsSpecs,
+        mappings: *const character_mappings.CharacterMappings,
+        emoji_map: *const emoji.EmojiMap,
+        nfc_data: *const nfc.NFCData,
+        apply_nfc: bool,
+    ) !TokenizedName {
+        if (input.len == 0) {
+            return TokenizedName{
+                .input = try allocator.dupe(u8, ""),
+                .tokens = &[_]Token{},
+                .allocator = allocator,
+            };
+        }
+        
+        const tokens = try tokenizeInputWithMappingsImplWithData(allocator, input, mappings, emoji_map, nfc_data, apply_nfc);
         
         return TokenizedName{
             .input = try allocator.dupe(u8, input),
@@ -481,6 +507,85 @@ fn tokenizeInputWithMappingsImpl(
         var nfc_data = try static_data_loader.loadNFC(allocator);
         defer nfc_data.deinit();
         try applyNFCTransform(allocator, &tokens, &nfc_data);
+    }
+    
+    // Collapse consecutive valid tokens
+    try collapseValidTokens(allocator, &tokens);
+    
+    return tokens.toOwnedSlice();
+}
+
+fn tokenizeInputWithMappingsImplWithData(
+    allocator: std.mem.Allocator,
+    input: []const u8,
+    mappings: *const character_mappings.CharacterMappings,
+    emoji_map: *const emoji.EmojiMap,
+    nfc_data: *const nfc.NFCData,
+    apply_nfc: bool,
+) ![]Token {
+    var tokens = std.ArrayList(Token).init(allocator);
+    defer tokens.deinit();
+    
+    // Process input looking for emojis first
+    var i: usize = 0;
+    while (i < input.len) {
+        // Try to match emoji at current position
+        if (emoji_map.findEmojiAt(allocator, input, i)) |emoji_match| {
+            // Convert input to codepoints
+            const input_cps = utils.str2cps(allocator, emoji_match.input) catch {
+                // If conversion fails, treat as regular characters
+                const char_len = std.unicode.utf8ByteSequenceLength(input[i]) catch 1;
+                if (i + char_len > input.len) break;
+                
+                const cp_bytes = input[i..i + char_len];
+                const cp = std.unicode.utf8Decode(cp_bytes) catch 0xFFFD;
+                try tokens.append(Token.createDisallowed(allocator, cp));
+                i += 1;
+                continue;
+            };
+            defer allocator.free(input_cps);
+            
+            try tokens.append(try Token.createEmoji(
+                allocator,
+                emoji_match.cps_input,
+                emoji_match.emoji_data.emoji,
+                emoji_match.emoji_data.no_fe0f
+            ));
+            i += emoji_match.byte_len;
+            continue;
+        }
+        
+        // Not an emoji, process as regular character
+        const char_len = std.unicode.utf8ByteSequenceLength(input[i]) catch 1;
+        if (i + char_len > input.len) break;
+        
+        const cp_bytes = input[i..i + char_len];
+        const cp = std.unicode.utf8Decode(cp_bytes) catch {
+            // Invalid UTF-8, treat as disallowed
+            try tokens.append(Token.createDisallowed(allocator, 0xFFFD));
+            i += 1;
+            continue;
+        };
+        
+        // Check character classification
+        if (cp == constants.CP_STOP) {
+            try tokens.append(Token.createStop(allocator));
+        } else if (mappings.isIgnored(cp)) {
+            try tokens.append(Token.createIgnored(allocator, cp));
+        } else if (mappings.getMapped(cp)) |mapped| {
+            try tokens.append(try Token.createMapped(allocator, cp, mapped));
+        } else if (mappings.isValid(cp)) {
+            try tokens.append(try Token.createValid(allocator, &[_]CodePoint{cp}));
+        } else {
+            try tokens.append(Token.createDisallowed(allocator, cp));
+        }
+        
+        i += char_len;
+    }
+    
+    // Apply NFC transformation if requested
+    if (apply_nfc) {
+        try applyNFCTransform(allocator, &tokens, nfc_data);
     }
     
     // Collapse consecutive valid tokens

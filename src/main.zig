@@ -71,7 +71,7 @@ test "memory management" {
     const allocator = arena.allocator();
     
     // Test that we properly manage memory
-    var normalizer = ens_normalize.normalizer.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.normalizer.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     const input = "test";

@@ -72,7 +72,7 @@ test "basic ENS normalization test cases" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = ens_normalize.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     // Basic test cases
@@ -101,7 +101,7 @@ test "unicode normalization test cases" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = ens_normalize.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     // Unicode test cases
@@ -128,7 +128,7 @@ test "error cases" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = ens_normalize.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     // Error test cases
@@ -154,7 +154,7 @@ test "memory management" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = ens_normalize.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     // Test that memory is properly managed
@@ -183,7 +183,7 @@ test "tokenization" {
     defer arena.deinit();
     const allocator = arena.allocator();
     
-    var normalizer = ens_normalize.EnsNameNormalizer.default(allocator);
+    var normalizer = try ens_normalize.EnsNameNormalizer.default(allocator);
     defer normalizer.deinit();
     
     const input = "hello";
