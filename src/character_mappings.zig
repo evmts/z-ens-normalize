@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 const CodePoint = root.CodePoint;
 const comptime_data = @import("comptime_data.zig");
+const log = @import("logger.zig");
 
 /// Character mapping system for ENS normalization using comptime data
 pub const CharacterMappings = struct {
@@ -23,6 +24,8 @@ pub const CharacterMappings = struct {
     /// Returns null if no mapping exists
     pub fn getMapped(self: *const CharacterMappings, cp: CodePoint) ?[]const CodePoint {
         _ = self;
+        log.trace("Getting mapping for U+{X:0>4}", .{cp});
+        
         // Fast path for ASCII uppercase -> lowercase
         if (cp >= 'A' and cp <= 'Z') {
             // Use comptime-generated array for ASCII mappings
@@ -33,29 +36,43 @@ pub const CharacterMappings = struct {
                 }
                 break :blk mappings;
             };
-            return &ascii_mappings[cp - 'A'];
+            const result = &ascii_mappings[cp - 'A'];
+            log.trace("  ASCII uppercase U+{X:0>4} maps to U+{X:0>4}", .{cp, result[0]});
+            return result;
         }
         
         // Check comptime mappings
-        return comptime_data.getMappedCodePoints(cp);
+        if (comptime_data.getMappedCodePoints(cp)) |mapped| {
+            log.trace("  Found mapping: {} codepoints", .{mapped.len});
+            return mapped;
+        }
+        
+        log.trace("  No mapping found for U+{X:0>4}", .{cp});
+        return null;
     }
     
     /// Check if a character is valid (no mapping needed)
     pub fn isValid(self: *const CharacterMappings, cp: CodePoint) bool {
         _ = self;
-        return comptime_data.isValid(cp);
+        const valid = comptime_data.isValid(cp);
+        log.trace("Checking if U+{X:0>4} is valid: {}", .{cp, valid});
+        return valid;
     }
     
     /// Check if a character should be ignored
     pub fn isIgnored(self: *const CharacterMappings, cp: CodePoint) bool {
         _ = self;
-        return comptime_data.isIgnored(cp);
+        const ignored = comptime_data.isIgnored(cp);
+        log.trace("Checking if U+{X:0>4} should be ignored: {}", .{cp, ignored});
+        return ignored;
     }
     
     /// Check if a character is fenced (placement restricted)
     pub fn isFenced(self: *const CharacterMappings, cp: CodePoint) bool {
         _ = self;
-        return comptime_data.isFenced(cp);
+        const fenced = comptime_data.isFenced(cp);
+        log.trace("Checking if U+{X:0>4} is fenced: {}", .{cp, fenced});
+        return fenced;
     }
     
     // These methods are no longer needed since we use comptime data

@@ -2,6 +2,7 @@ const std = @import("std");
 const root = @import("root.zig");
 const CodePoint = root.CodePoint;
 const utils = @import("utils.zig");
+const log = @import("logger.zig");
 
 /// Single emoji sequence data
 pub const EmojiData = struct {
@@ -53,6 +54,8 @@ pub const EmojiMap = struct {
     
     /// Add an emoji sequence to the map
     pub fn addEmoji(self: *EmojiMap, no_fe0f: []const CodePoint, canonical: []const CodePoint) !void {
+        log.trace("Adding emoji: no_fe0f.len={}, canonical.len={}", .{no_fe0f.len, canonical.len});
+        
         // Create owned copies
         const owned_no_fe0f = try self.allocator.dupe(CodePoint, no_fe0f);
         errdefer self.allocator.free(owned_no_fe0f);
@@ -68,6 +71,8 @@ pub const EmojiMap = struct {
         // Convert no_fe0f to string key
         const key = try utils.cps2str(self.allocator, no_fe0f);
         defer self.allocator.free(key);
+        
+        log.debug("Added emoji with key length {} bytes", .{key.len});
         
         // Add to map with owned key
         const owned_key = try self.allocator.dupe(u8, key);
@@ -85,10 +90,16 @@ pub const EmojiMap = struct {
     
     /// Find emoji at given position in string
     pub fn findEmojiAt(self: *const EmojiMap, allocator: std.mem.Allocator, input: []const u8, pos: usize) ?EmojiMatch {
-        if (pos >= input.len) return null;
+        log.trace("Looking for emoji at position {} in input of length {}", .{pos, input.len});
+        
+        if (pos >= input.len) {
+            log.trace("Position {} is beyond input length, no emoji found", .{pos});
+            return null;
+        }
         
         // Try from longest possible match down to single character
         var len = @min(input.len - pos, self.max_length * 4); // rough estimate for max UTF-8 bytes
+        log.trace("Checking up to {} bytes for emoji match", .{len});
         
         while (len > 0) : (len -= 1) {
             if (pos + len > input.len) continue;
@@ -113,6 +124,9 @@ pub const EmojiMap = struct {
             
             // Look up in map
             if (self.emojis.get(key)) |emoji_data| {
+                log.debug("Found emoji match at position {}: {} codepoints, {} bytes", .{pos, cps.len, len});
+                log.trace("  Emoji canonical form has {} codepoints", .{emoji_data.emoji.len});
+                
                 // Need to return owned copies since we're deferring the frees
                 const owned_cps = allocator.dupe(CodePoint, cps) catch continue;
                 return EmojiMatch{
@@ -124,6 +138,7 @@ pub const EmojiMap = struct {
             }
         }
         
+        log.trace("No emoji found at position {}", .{pos});
         return null;
     }
 };
