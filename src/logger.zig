@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 pub const LogLevel = enum(u8) {
     off = 0,
-    error = 1,
+    err = 1,
     warn = 2,
     info = 3,
     debug = 4,
@@ -11,7 +11,8 @@ pub const LogLevel = enum(u8) {
 
     pub fn fromString(str: []const u8) LogLevel {
         if (std.mem.eql(u8, str, "off")) return .off;
-        if (std.mem.eql(u8, str, "error")) return .error;
+        if (std.mem.eql(u8, str, "error")) return .err;
+        if (std.mem.eql(u8, str, "err")) return .err;
         if (std.mem.eql(u8, str, "warn")) return .warn;
         if (std.mem.eql(u8, str, "info")) return .info;
         if (std.mem.eql(u8, str, "debug")) return .debug;
@@ -56,7 +57,7 @@ fn shouldLog(level: LogLevel) bool {
 }
 
 pub fn err(comptime fmt: []const u8, args: anytype) void {
-    if (shouldLog(.error)) {
+    if (shouldLog(.err)) {
         std.debug.print("[ERROR] " ++ fmt ++ "\n", args);
     }
 }
@@ -142,23 +143,23 @@ pub const Timer = struct {
     }
     
     pub fn stop(self: Timer) void {
-        timing(self.label, self.start_time);
+        if (!shouldLog(.debug)) return;
+        
+        const end_time = std.time.milliTimestamp();
+        const duration = end_time - self.start_time;
+        std.debug.print("[DEBUG] {s} took {}ms\n", .{ self.label, duration });
     }
 };
 
-pub fn enterFn(comptime fn_name: []const u8, args_fmt: []const u8, args: anytype) void {
+pub fn enterFn(comptime fn_name: []const u8, comptime args_fmt: []const u8, args: anytype) void {
     if (shouldLog(.trace)) {
-        std.debug.print("[TRACE] -> {s}(", .{fn_name});
-        std.debug.print(args_fmt, args);
-        std.debug.print(")\n", .{});
+        std.debug.print("[TRACE] -> {s}(" ++ args_fmt ++ ")\n", .{fn_name} ++ args);
     }
 }
 
-pub fn exitFn(comptime fn_name: []const u8, result_fmt: []const u8, result: anytype) void {
+pub fn exitFn(comptime fn_name: []const u8, comptime result_fmt: []const u8, result: anytype) void {
     if (shouldLog(.trace)) {
-        std.debug.print("[TRACE] <- {s} returned ", .{fn_name});
-        std.debug.print(result_fmt, result);
-        std.debug.print("\n", .{});
+        std.debug.print("[TRACE] <- {s} returned " ++ result_fmt ++ "\n", .{fn_name} ++ result);
     }
 }
 
@@ -169,7 +170,7 @@ pub fn exitFnVoid(comptime fn_name: []const u8) void {
 }
 
 pub fn errTrace(comptime fn_name: []const u8, e: anyerror) void {
-    if (shouldLog(.error)) {
+    if (shouldLog(.err)) {
         std.debug.print("[ERROR] {s} failed with error: {}\n", .{ fn_name, e });
     }
 }
