@@ -9,6 +9,7 @@ const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
 const combining_marks = @import("combining_marks.zig");
 const nsm_validation = @import("nsm_validation.zig");
+const log = @import("logger.zig");
 
 // Type definitions
 pub const CodePoint = u32;
@@ -109,16 +110,24 @@ pub fn validateLabel(
     tokenized_name: tokenizer.TokenizedName,
     specs: *const code_points.CodePointsSpecs,
 ) ValidationError!ValidatedLabel {
+    log.enterFn("validateLabel", "tokens.len={}", .{tokenized_name.tokens.len});
+    const timer = log.Timer.start("validateLabel");
+    defer timer.stop();
+    
     _ = specs;
     
-    
+    log.debug("Checking if label is empty", .{});
     try checkNotEmpty(tokenized_name);
     
+    log.debug("Getting all codepoints from tokens", .{});
     const cps = try getAllCodePoints(allocator, tokenized_name);
     defer allocator.free(cps);
+    log.debug("Label has {} codepoints", .{cps.len});
     
+    log.debug("Checking for disallowed characters", .{});
     try checkDisallowedCharacters(tokenized_name.tokens);
     
+    log.debug("Checking for leading underscore", .{});
     try checkLeadingUnderscore(cps);
     
     var groups = static_data_loader.loadScriptGroups(allocator) catch |err| {
@@ -205,7 +214,10 @@ fn isWhitespace(cp: CodePoint) bool {
 
 // Validation helper functions
 fn checkNotEmpty(tokenized_name: tokenizer.TokenizedName) ValidationError!void {
+    log.trace("Checking if tokenized name is empty", .{});
+    
     if (tokenized_name.isEmpty()) {
+        log.err("Validation failed: Empty label", .{});
         return ValidationError.EmptyLabel;
     }
     
@@ -215,6 +227,7 @@ fn checkNotEmpty(tokenized_name: tokenizer.TokenizedName) ValidationError!void {
             .ignored => continue,
             .disallowed => {
                 const cp = token.data.disallowed.cp;
+                log.warn("Found disallowed character U+{X:0>4} in label", .{cp});
                 if (isWhitespace(cp)) {
                     continue;
                 }
@@ -234,12 +247,20 @@ fn checkNotEmpty(tokenized_name: tokenizer.TokenizedName) ValidationError!void {
 }
 
 fn checkDisallowedCharacters(tokens: []const tokenizer.Token) ValidationError!void {
-    for (tokens) |token| {
+    log.trace("Checking for disallowed characters in {} tokens", .{tokens.len});
+    
+    for (tokens, 0..) |token, i| {
         switch (token.type) {
-            .disallowed => return ValidationError.DisallowedCharacter,
+            .disallowed => {
+                const cp = token.data.disallowed.cp;
+                log.err("Validation failed: Disallowed character U+{X:0>4} at token[{}]", .{cp, i});
+                return ValidationError.DisallowedCharacter;
+            },
             else => continue,
         }
     }
+    
+    log.trace("No disallowed characters found", .{});
 }
 
 fn getAllCodePoints(allocator: std.mem.Allocator, tokenized_name: tokenizer.TokenizedName) ValidationError![]CodePoint {
@@ -261,6 +282,8 @@ fn getAllCodePoints(allocator: std.mem.Allocator, tokenized_name: tokenizer.Toke
 fn checkLeadingUnderscore(cps: []const CodePoint) ValidationError!void {
     if (cps.len == 0) return;
     
+    log.trace("Checking for leading underscores in {} codepoints", .{cps.len});
+    
     var leading_underscores: usize = 0;
     for (cps) |cp| {
         if (cp == 0x5F) { // '_' underscore
@@ -279,12 +302,17 @@ fn checkLeadingUnderscore(cps: []const CodePoint) ValidationError!void {
 
 
 fn checkASCIIRules(cps: []const CodePoint) ValidationError!void {
+    log.trace("Checking ASCII-specific rules", .{});
+    
     // ASCII label extension rule: no '--' at positions 2-3
     if (cps.len >= 4 and 
         cps[2] == 0x2D and // '-' hyphen
         cps[3] == 0x2D) {  // '-' hyphen
+        log.err("Validation failed: Invalid label extension (-- at positions 2-3)", .{});
         return ValidationError.InvalidLabelExtension;
     }
+    
+    log.trace("ASCII rules check passed", .{});
 }
 
 fn checkEmojiRules(tokens: []const tokenizer.Token) ValidationError!void {

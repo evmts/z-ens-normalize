@@ -8,6 +8,7 @@ const code_points = @import("code_points.zig");
 const error_types = @import("error.zig");
 const script_groups = @import("script_groups.zig");
 const confusables = @import("confusables.zig");
+const log = @import("logger.zig");
 
 pub const LabelType = union(enum) {
     ascii,
@@ -108,7 +109,10 @@ pub fn validateName(
     name: tokenizer.TokenizedName,
     specs: *const code_points.CodePointsSpecs,
 ) ![]ValidatedLabel {
+    log.enterFn("validateName", "tokens.len={}", .{name.tokens.len});
+    
     if (name.tokens.len == 0) {
+        log.debug("Empty name, returning empty label array", .{});
         return try allocator.alloc(ValidatedLabel, 0);
     }
     
@@ -122,10 +126,13 @@ pub fn validateName(
         .allocator = allocator,
     };
     
+    log.debug("Validating label with {} tokens", .{label.tokens.len});
     const validated = try validateLabel(allocator, label, specs);
     try labels.append(validated);
     
-    return labels.toOwnedSlice();
+    const result = try labels.toOwnedSlice();
+    log.exitFn("validateName", "labels.len={}", .{result.len});
+    return result;
 }
 
 pub fn validateNameWithData(
@@ -165,12 +172,19 @@ pub fn validateNameWithStreamData(
     script_groups_data: *const script_groups.ScriptGroups,
     confusables_data: *const confusables.ConfusableData,
 ) ![]ValidatedLabel {
+    log.enterFn("validateNameWithStreamData", "tokens.len={}", .{name.tokens.len});
+    const timer = log.Timer.start("validateNameWithStreamData");
+    defer timer.stop();
+    
     _ = script_groups_data;
     _ = confusables_data;
     
     if (name.tokens.len == 0) {
+        log.debug("Empty name, returning empty label array", .{});
         return try allocator.alloc(ValidatedLabel, 0);
     }
+    
+    log.debug("Validating stream name with {} tokens", .{name.tokens.len});
     
     // For now, create a simple implementation that treats the entire name as one label
     // TODO: Implement proper label splitting on stop tokens
