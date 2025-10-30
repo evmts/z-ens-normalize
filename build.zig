@@ -69,6 +69,13 @@ pub fn build(b: *std.Build) void {
     });
     nf_test_mod.addImport("z_ens_normalize", mod);
 
+    const init_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/init_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    init_test_mod.addImport("z_ens_normalize", mod);
+
     // ENSIP15 normalization tests
     const ensip15_tests = b.addTest(.{
         .root_module = ensip15_test_mod,
@@ -82,6 +89,13 @@ pub fn build(b: *std.Build) void {
     });
     const run_nf_tests = b.addRunArtifact(nf_tests);
     test_step.dependOn(&run_nf_tests.step);
+
+    // Init data loading tests
+    const init_tests = b.addTest(.{
+        .root_module = init_test_mod,
+    });
+    const run_init_tests = b.addRunArtifact(init_tests);
+    test_step.dependOn(&run_init_tests.step);
 
     // ============================================================
     // 5. Test Data Copy Step
