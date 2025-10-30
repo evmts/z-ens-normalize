@@ -298,6 +298,49 @@ z-ens-normalize/
 └── README.md                 # This file
 ```
 
+### Development Process
+
+This library was developed using **AI-assisted implementation** with [Claude Code](https://claude.com/claude-code), following a structured, multi-phase approach:
+
+#### Context & Specifications
+
+- **`.claude/commands/ens.md`** - Complete ENS specification context including ENSIP-1 (ENS Protocol) and ENSIP-15 (Name Normalization) standards
+- **`prompts/`** - 19 detailed implementation guides (tasks 01-19) providing step-by-step instructions for porting each component from the Go reference implementation
+
+#### Implementation Strategy
+
+The development followed a **staged approach** outlined in `prompts/00-meta-guide.md`:
+
+**Stage 1: Skeleton Setup** (Tasks 01-19)
+- Created project structure with all type definitions and function signatures
+- Stubbed all logic with `@panic("TODO")` to achieve compilation
+- Result: `zig build` succeeds, tests exist but fail
+
+**Stage 2: Implementation** (Dependency order)
+- Implemented actual logic following the Go reference implementation
+- Three parallel phases:
+  - **Phase 1 (Foundation)**: 8 concurrent tasks - decoder, runeset, types, binaries, test data
+  - **Phase 2 (Core)**: 8 concurrent tasks - NF initialization, normalization, ENSIP15 validation
+  - **Phase 3 (Tests)**: 3 concurrent tasks - test infrastructure for NF and ENSIP15
+- Result: `zig build test` shows 100% pass rate
+
+#### Key Implementation Guides
+
+Each prompt file in `prompts/` includes:
+- Complete Go reference code to port
+- Zig type mappings and patterns
+- Step-by-step implementation guidance
+- Success criteria checklist
+- Validation commands
+
+Example tasks:
+- `01-util-decoder.md` - Binary data decoder for compressed spec files
+- `09-nf-init.md` - Unicode normalization data initialization
+- `13-ensip15-normalize.md` - Core ENSIP-15 normalization pipeline
+- `18-ensip15-tests.md` - Comprehensive validation test suite
+
+This approach enabled systematic development with clear milestones, parallel workstreams, and automated validation at each stage.
+
 ### Memory Management
 
 The library follows Zig best practices for memory management:
