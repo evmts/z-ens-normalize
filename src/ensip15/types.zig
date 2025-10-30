@@ -5,6 +5,7 @@
 //! needed for the normalization pipeline.
 
 const std = @import("std");
+const RuneSet = @import("../util/runeset.zig").RuneSet;
 
 /// Represents a single token in the output stream
 /// Can be either a text token (codepoints) or an emoji token
@@ -37,9 +38,6 @@ pub const EmojiSequence = struct {
 
     /// Beautified form (with FE0F preserved where appropriate)
     beautified: []const u21,
-
-    /// Human-readable name for this emoji
-    name: []const u8,
 };
 
 /// Represents a script group (e.g., Latin, Greek, Han)
@@ -57,45 +55,48 @@ pub const Group = struct {
     cm_whitelisted: bool,
 
     /// Primary codepoints for this group
-    /// Note: This would be a RuneSet in full implementation
-    primary: void,
+    primary: RuneSet,
 
     /// Secondary codepoints for this group
-    /// Note: This would be a RuneSet in full implementation
-    secondary: void,
+    secondary: RuneSet,
 };
 
 /// Represents a whole confusable sequence
 pub const Whole = struct {
-    /// The confusable sequence
-    sequence: []const u21,
+    /// Valid codepoints for this whole
+    valid: RuneSet,
 
-    /// The group this belongs to
-    group: *const Group,
+    /// Confused codepoints
+    confused: RuneSet,
+
+    /// Map of codepoint to complement group indices
+    complements: std.AutoHashMap(u21, []i32),
 };
 
 /// Node in the emoji trie tree
 pub const EmojiNode = struct {
     /// Children nodes mapped by codepoint
-    /// Note: This would be a HashMap in full implementation
-    children: void,
+    children: ?std.AutoHashMap(u21, *EmojiNode),
 
     /// The emoji sequence at this node (if this is a leaf)
     emoji: ?*const EmojiSequence,
-};
 
-/// RuneSet placeholder - will be implemented in Task 02
-pub const RuneSet = struct {
-    pub fn contains(self: *const RuneSet, cp: u21) bool {
-        _ = self;
-        _ = cp;
-        @panic("TODO: implement RuneSet.contains");
+    /// Get or create a child node for the given codepoint
+    pub fn child(self: *EmojiNode, allocator: std.mem.Allocator, cp: u21) !*EmojiNode {
+        if (self.children == null) {
+            self.children = std.AutoHashMap(u21, *EmojiNode).init(allocator);
+        }
+
+        const result = try self.children.?.getOrPut(cp);
+        if (!result.found_existing) {
+            const new_node = try allocator.create(EmojiNode);
+            new_node.* = EmojiNode{
+                .children = null,
+                .emoji = null,
+            };
+            result.value_ptr.* = new_node;
+        }
+
+        return result.value_ptr.*;
     }
-};
-
-/// ENSIP15 normalizer instance (stub)
-/// Will be fully implemented in later tasks
-pub const Ensip15 = struct {
-    should_escape: RuneSet,
-    combining_marks: RuneSet,
 };

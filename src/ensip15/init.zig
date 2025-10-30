@@ -3,8 +3,13 @@
 //! This module implements the init() function that loads the ENSIP15 specification
 //! from the embedded spec.bin file and constructs all necessary data structures.
 //!
-//! Task 11: This is the STUB implementation. Helper functions use @panic("TODO: implement")
-//! and will be implemented in later tasks (Tasks 12-14).
+//! Agent 5: Implements all data loading functions including:
+//! - decodeNamedCodepoints: Loads fenced character mappings
+//! - decodeMapped: Loads character mapping rules
+//! - decodeGroups: Loads script groups (Latin, Greek, Han, etc.)
+//! - decodeEmojis: Recursively loads emoji sequences
+//! - makeEmojiTree: Builds trie for efficient emoji matching
+//! - decodeWholes: Loads confusable detection data (partial implementation)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -21,7 +26,7 @@ const Whole = types.Whole;
 const spec_data = @embedFile("spec.bin");
 
 // ============================================================
-// Decode Helper Functions (STUBBED)
+// Decode Helper Functions
 // ============================================================
 
 /// Decode named codepoints (fenced characters)
@@ -33,9 +38,25 @@ const spec_data = @embedFile("spec.bin");
 ///
 /// Go reference: ensip15.go lines 38-44
 fn decodeNamedCodepoints(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u8) {
-    _ = decoder;
-    _ = allocator;
-    @panic("TODO: Task 11 - implement decodeNamedCodepoints");
+    var map = std.AutoHashMap(u21, []const u8).init(allocator);
+    errdefer {
+        var iter = map.valueIterator();
+        while (iter.next()) |value| {
+            allocator.free(value.*);
+        }
+        map.deinit();
+    }
+
+    const count = decoder.ReadUnsigned();
+    const codepoints = try decoder.ReadSortedAscending(count, allocator);
+    defer allocator.free(codepoints);
+
+    for (codepoints) |cp| {
+        const name = try decoder.ReadString(allocator);
+        try map.put(@intCast(cp), name);
+    }
+
+    return map;
 }
 
 /// Decode mapped characters (complex mapping structure)
@@ -52,9 +73,57 @@ fn decodeNamedCodepoints(decoder: *Decoder, allocator: Allocator) !std.AutoHashM
 ///
 /// Go reference: ensip15.go lines 46-70
 fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u21) {
-    _ = decoder;
-    _ = allocator;
-    @panic("TODO: Task 11 - implement decodeMapped");
+    var map = std.AutoHashMap(u21, []const u21).init(allocator);
+    errdefer {
+        var iter = map.valueIterator();
+        while (iter.next()) |value| {
+            allocator.free(value.*);
+        }
+        map.deinit();
+    }
+
+    while (true) {
+        const w = decoder.ReadUnsigned();
+        if (w == 0) break;
+
+        const keys = try decoder.ReadSortedUnique(allocator);
+        defer allocator.free(keys);
+
+        const n: usize = @intCast(keys.len);
+        const w_usize: usize = @intCast(w);
+
+        // Allocate matrix m[n][w]
+        const matrix = try allocator.alloc([]u21, n);
+        errdefer {
+            for (matrix) |row| {
+                allocator.free(row);
+            }
+            allocator.free(matrix);
+        }
+
+        for (matrix) |*row| {
+            row.* = try allocator.alloc(u21, w_usize);
+        }
+
+        // Read transposed: for each column, read all rows
+        for (0..w_usize) |j| {
+            const column = try decoder.ReadUnsortedDeltas(@intCast(n), allocator);
+            defer allocator.free(column);
+
+            for (0..n) |i| {
+                matrix[i][j] = @intCast(column[i]);
+            }
+        }
+
+        // Store in map
+        for (0..n) |i| {
+            try map.put(@intCast(keys[i]), matrix[i]);
+        }
+
+        allocator.free(matrix);
+    }
+
+    return map;
 }
 
 /// Decode script groups
@@ -69,9 +138,48 @@ fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, [
 ///
 /// Go reference: groups.go lines 43-60
 fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
-    _ = decoder;
-    _ = allocator;
-    @panic("TODO: Task 12 - implement decodeGroups");
+    const RuneSet = @import("../util/runeset.zig").RuneSet;
+
+    var groups = std.ArrayList(Group).init(allocator);
+    errdefer {
+        for (groups.items) |group| {
+            allocator.free(group.name);
+            group.primary.deinit(allocator);
+            group.secondary.deinit(allocator);
+        }
+        groups.deinit();
+    }
+
+    while (true) {
+        const name = try decoder.ReadString(allocator);
+        if (name.len == 0) {
+            allocator.free(name);
+            break;
+        }
+
+        const bits = decoder.ReadUnsigned();
+        const restricted = (bits & 1) != 0;
+        const cm_whitelisted = (bits & 2) != 0;
+
+        const primary_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(primary_ints);
+        const primary = try RuneSet.fromInts(allocator, primary_ints);
+
+        const secondary_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(secondary_ints);
+        const secondary = try RuneSet.fromInts(allocator, secondary_ints);
+
+        try groups.append(Group{
+            .index = @intCast(groups.items.len),
+            .name = name,
+            .restricted = restricted,
+            .cm_whitelisted = cm_whitelisted,
+            .primary = primary,
+            .secondary = secondary,
+        });
+    }
+
+    return try groups.toOwnedSlice();
 }
 
 /// Decode emoji sequences
@@ -89,9 +197,92 @@ fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
 ///
 /// Go reference: emojis.go lines 38-61
 fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
-    _ = decoder;
-    _ = allocator;
-    @panic("TODO: Task 13 - implement decodeEmojis");
+    return decodeEmojisRecursive(decoder, allocator, &.{});
+}
+
+/// Recursive helper for decodeEmojis
+fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const u21) ![]EmojiSequence {
+    const FE0F: u21 = 0xFE0F;
+
+    var result = std.ArrayList(EmojiSequence).init(allocator);
+    errdefer {
+        for (result.items) |emoji| {
+            allocator.free(emoji.normalized);
+            allocator.free(emoji.beautified);
+        }
+        result.deinit();
+    }
+
+    // First loop: leaf emojis (terminal nodes)
+    const count1 = decoder.ReadUnsigned();
+    const cps1 = try decoder.ReadSortedAscending(count1, allocator);
+    defer allocator.free(cps1);
+
+    for (cps1) |cp| {
+        // Build beautified: prev + cp
+        const beautified = try allocator.alloc(u21, prev.len + 1);
+        if (prev.len > 0) {
+            @memcpy(beautified[0..prev.len], prev);
+        }
+        beautified[prev.len] = @intCast(cp);
+
+        // Build normalized: beautified with FE0F stripped
+        var normalized_list = std.ArrayList(u21).init(allocator);
+        defer normalized_list.deinit();
+
+        for (beautified) |x| {
+            if (x != FE0F) {
+                try normalized_list.append(x);
+            }
+        }
+
+        // If no FE0F was stripped, reuse beautified
+        const normalized = if (normalized_list.items.len == beautified.len)
+            try allocator.dupe(u21, beautified)
+        else
+            try normalized_list.toOwnedSlice();
+
+        try result.append(EmojiSequence{
+            .normalized = normalized,
+            .beautified = beautified,
+        });
+    }
+
+    // Second loop: branch emojis (recursive)
+    const count2 = decoder.ReadUnsigned();
+    const cps2 = try decoder.ReadSortedAscending(count2, allocator);
+    defer allocator.free(cps2);
+
+    for (cps2) |cp| {
+        // Build new prev: prev + cp
+        const new_prev = try allocator.alloc(u21, prev.len + 1);
+        defer allocator.free(new_prev);
+
+        if (prev.len > 0) {
+            @memcpy(new_prev[0..prev.len], prev);
+        }
+        new_prev[prev.len] = @intCast(cp);
+
+        // Recursive call
+        const sub_emojis = try decodeEmojisRecursive(decoder, allocator, new_prev);
+        defer {
+            for (sub_emojis) |emoji| {
+                allocator.free(emoji.normalized);
+                allocator.free(emoji.beautified);
+            }
+            allocator.free(sub_emojis);
+        }
+
+        // Append all sub-emojis to result
+        for (sub_emojis) |emoji| {
+            try result.append(EmojiSequence{
+                .normalized = try allocator.dupe(u21, emoji.normalized),
+                .beautified = try allocator.dupe(u21, emoji.beautified),
+            });
+        }
+    }
+
+    return try result.toOwnedSlice();
 }
 
 /// Decode whole-script confusables
@@ -111,14 +302,76 @@ fn decodeWholes(
     groups: []Group,
     allocator: Allocator,
 ) !struct { wholes: []Whole, confusables: std.AutoHashMap(u21, Whole) } {
-    _ = decoder;
+    const RuneSet = @import("../util/runeset.zig").RuneSet;
     _ = groups;
-    _ = allocator;
-    @panic("TODO: Task 14 - implement decodeWholes");
+
+    var wholes = std.ArrayList(Whole).init(allocator);
+    errdefer {
+        for (wholes.items) |whole| {
+            whole.valid.deinit(allocator);
+            whole.confused.deinit(allocator);
+            var iter = whole.complements.valueIterator();
+            while (iter.next()) |value| {
+                allocator.free(value.*);
+            }
+            whole.complements.deinit();
+        }
+        wholes.deinit();
+    }
+
+    var confusables = std.AutoHashMap(u21, Whole).init(allocator);
+    errdefer confusables.deinit();
+
+    while (true) {
+        const confused_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(confused_ints);
+
+        if (confused_ints.len == 0) break;
+
+        const confused = try RuneSet.fromInts(allocator, confused_ints);
+        errdefer confused.deinit(allocator);
+
+        const valid_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(valid_ints);
+
+        const valid = try RuneSet.fromInts(allocator, valid_ints);
+        errdefer valid.deinit(allocator);
+
+        var complements_map = std.AutoHashMap(u21, []i32).init(allocator);
+        errdefer {
+            var iter = complements_map.valueIterator();
+            while (iter.next()) |value| {
+                allocator.free(value.*);
+            }
+            complements_map.deinit();
+        }
+
+        const whole = Whole{
+            .valid = valid,
+            .confused = confused,
+            .complements = complements_map,
+        };
+
+        try wholes.append(whole);
+
+        // Add to confusables map
+        for (confused.runes) |cp| {
+            try confusables.put(cp, whole);
+        }
+
+        // TODO: Decode and build complements map
+        // This is complex logic involving group extents and will be implemented later
+        // For now, the complements map is empty
+    }
+
+    return .{
+        .wholes = try wholes.toOwnedSlice(),
+        .confusables = confusables,
+    };
 }
 
 // ============================================================
-// Emoji Tree Construction (STUBBED)
+// Emoji Tree Construction
 // ============================================================
 
 /// Build emoji trie tree for efficient sequence matching
@@ -136,9 +389,44 @@ fn decodeWholes(
 ///
 /// Go reference: emojis.go lines 80-100
 fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode {
-    _ = emojis;
-    _ = allocator;
-    @panic("TODO: Task 13 - implement makeEmojiTree");
+    const FE0F: u21 = 0xFE0F;
+
+    const root = try allocator.create(EmojiNode);
+    root.* = EmojiNode{
+        .children = null,
+        .emoji = null,
+    };
+
+    for (emojis) |*emoji| {
+        // Start with just the root node
+        var nodes = std.ArrayList(*EmojiNode).init(allocator);
+        defer nodes.deinit();
+        try nodes.append(root);
+
+        // Process each codepoint in the beautified sequence
+        for (emoji.beautified) |cp| {
+            if (cp == FE0F) {
+                // FE0F creates duplicate branches
+                const current_len = nodes.items.len;
+                for (nodes.items[0..current_len]) |node| {
+                    const new_node = try node.child(allocator, cp);
+                    try nodes.append(new_node);
+                }
+            } else {
+                // Non-FE0F updates existing branches in place
+                for (nodes.items, 0..) |node, i| {
+                    nodes.items[i] = try node.child(allocator, cp);
+                }
+            }
+        }
+
+        // Mark all end nodes with this emoji
+        for (nodes.items) |node| {
+            node.emoji = emoji;
+        }
+    }
+
+    return root;
 }
 
 // ============================================================
@@ -244,6 +532,8 @@ pub const Ensip15Stub = struct {
     pub fn init(allocator: Allocator) !Ensip15Stub {
         // Initialize decoder from embedded spec.bin
         var decoder = try Decoder.init(spec_data, allocator);
+        defer decoder.deinit(allocator);
+        _ = &decoder; // Will be used in full implementation
 
         // For now, just return a minimal struct since all decode functions panic
         // In full implementation, this would:
@@ -291,4 +581,229 @@ test "init compiles" {
     const result = try Ensip15Stub.init(allocator);
     _ = result;
     // Just verify it compiles and returns
+}
+
+test "decodeNamedCodepoints loads fenced characters" {
+    const allocator = std.testing.allocator;
+
+    var decoder = try Decoder.init(spec_data, allocator);
+    defer decoder.deinit(allocator);
+
+    // Skip initial RuneSets to get to named codepoints
+    const should_escape = try decoder.ReadUnique(allocator);
+    defer allocator.free(should_escape);
+    const ignored = try decoder.ReadUnique(allocator);
+    defer allocator.free(ignored);
+    const combining_marks = try decoder.ReadUnique(allocator);
+    defer allocator.free(combining_marks);
+    _ = decoder.ReadUnsigned(); // maxNonSpacingMarks
+    const non_spacing = try decoder.ReadUnique(allocator);
+    defer allocator.free(non_spacing);
+    const nfc_check = try decoder.ReadUnique(allocator);
+    defer allocator.free(nfc_check);
+
+    // Now decode named codepoints
+    const fenced = try decodeNamedCodepoints(&decoder, allocator);
+    defer {
+        var iter = fenced.valueIterator();
+        while (iter.next()) |value| {
+            allocator.free(value.*);
+        }
+        fenced.deinit();
+    }
+
+    // Should have some fenced characters
+    try std.testing.expect(fenced.count() > 0);
+}
+
+test "decodeMapped loads character mappings" {
+    const allocator = std.testing.allocator;
+
+    var decoder = try Decoder.init(spec_data, allocator);
+    defer decoder.deinit(allocator);
+
+    // Skip to mapped section
+    {
+        const should_escape = try decoder.ReadUnique(allocator);
+        defer allocator.free(should_escape);
+        const ignored = try decoder.ReadUnique(allocator);
+        defer allocator.free(ignored);
+        const combining_marks = try decoder.ReadUnique(allocator);
+        defer allocator.free(combining_marks);
+        _ = decoder.ReadUnsigned();
+        const non_spacing = try decoder.ReadUnique(allocator);
+        defer allocator.free(non_spacing);
+        const nfc_check = try decoder.ReadUnique(allocator);
+        defer allocator.free(nfc_check);
+
+        // Skip fenced
+        const count = decoder.ReadUnsigned();
+        const cps = try decoder.ReadSortedAscending(count, allocator);
+        defer allocator.free(cps);
+        for (cps) |_| {
+            const name = try decoder.ReadString(allocator);
+            allocator.free(name);
+        }
+    }
+
+    // Now decode mapped
+    const mapped = try decodeMapped(&decoder, allocator);
+    defer {
+        var iter = mapped.valueIterator();
+        while (iter.next()) |value| {
+            allocator.free(value.*);
+        }
+        mapped.deinit();
+    }
+
+    // Should have mapped characters
+    try std.testing.expect(mapped.count() > 0);
+}
+
+test "decodeGroups loads script groups" {
+    const allocator = std.testing.allocator;
+
+    var decoder = try Decoder.init(spec_data, allocator);
+    defer decoder.deinit(allocator);
+
+    // Skip to groups section
+    {
+        const should_escape = try decoder.ReadUnique(allocator);
+        defer allocator.free(should_escape);
+        const ignored = try decoder.ReadUnique(allocator);
+        defer allocator.free(ignored);
+        const combining_marks = try decoder.ReadUnique(allocator);
+        defer allocator.free(combining_marks);
+        _ = decoder.ReadUnsigned();
+        const non_spacing = try decoder.ReadUnique(allocator);
+        defer allocator.free(non_spacing);
+        const nfc_check = try decoder.ReadUnique(allocator);
+        defer allocator.free(nfc_check);
+
+        // Skip fenced
+        const fenced_count = decoder.ReadUnsigned();
+        const fenced_cps = try decoder.ReadSortedAscending(fenced_count, allocator);
+        defer allocator.free(fenced_cps);
+        for (fenced_cps) |_| {
+            const name = try decoder.ReadString(allocator);
+            allocator.free(name);
+        }
+
+        // Skip mapped
+        while (true) {
+            const w = decoder.ReadUnsigned();
+            if (w == 0) break;
+            const keys = try decoder.ReadSortedUnique(allocator);
+            defer allocator.free(keys);
+            const n: usize = @intCast(keys.len);
+            for (0..@intCast(w)) |_| {
+                const col = try decoder.ReadUnsortedDeltas(@intCast(n), allocator);
+                allocator.free(col);
+            }
+        }
+    }
+
+    // Now decode groups
+    const groups = try decodeGroups(&decoder, allocator);
+    defer {
+        for (groups) |group| {
+            allocator.free(group.name);
+            group.primary.deinit(allocator);
+            group.secondary.deinit(allocator);
+        }
+        allocator.free(groups);
+    }
+
+    // Should have multiple groups
+    try std.testing.expect(groups.len > 10);
+
+    // Check for common groups
+    var found_latin = false;
+    var found_greek = false;
+    for (groups) |group| {
+        if (std.mem.eql(u8, group.name, "Latin")) found_latin = true;
+        if (std.mem.eql(u8, group.name, "Greek")) found_greek = true;
+    }
+
+    try std.testing.expect(found_latin);
+    try std.testing.expect(found_greek);
+}
+
+test "decodeEmojis loads emoji sequences" {
+    const allocator = std.testing.allocator;
+
+    var decoder = try Decoder.init(spec_data, allocator);
+    defer decoder.deinit(allocator);
+
+    // Skip to emoji section - same process as before
+    {
+        const should_escape = try decoder.ReadUnique(allocator);
+        defer allocator.free(should_escape);
+        const ignored = try decoder.ReadUnique(allocator);
+        defer allocator.free(ignored);
+        const combining_marks = try decoder.ReadUnique(allocator);
+        defer allocator.free(combining_marks);
+        _ = decoder.ReadUnsigned();
+        const non_spacing = try decoder.ReadUnique(allocator);
+        defer allocator.free(non_spacing);
+        const nfc_check = try decoder.ReadUnique(allocator);
+        defer allocator.free(nfc_check);
+
+        const fenced_count = decoder.ReadUnsigned();
+        const fenced_cps = try decoder.ReadSortedAscending(fenced_count, allocator);
+        defer allocator.free(fenced_cps);
+        for (fenced_cps) |_| {
+            const name = try decoder.ReadString(allocator);
+            allocator.free(name);
+        }
+
+        while (true) {
+            const w = decoder.ReadUnsigned();
+            if (w == 0) break;
+            const keys = try decoder.ReadSortedUnique(allocator);
+            defer allocator.free(keys);
+            const n: usize = @intCast(keys.len);
+            for (0..@intCast(w)) |_| {
+                const col = try decoder.ReadUnsortedDeltas(@intCast(n), allocator);
+                allocator.free(col);
+            }
+        }
+
+        while (true) {
+            const name = try decoder.ReadString(allocator);
+            if (name.len == 0) {
+                allocator.free(name);
+                break;
+            }
+            allocator.free(name);
+            _ = decoder.ReadUnsigned();
+            const primary = try decoder.ReadUnique(allocator);
+            allocator.free(primary);
+            const secondary = try decoder.ReadUnique(allocator);
+            allocator.free(secondary);
+        }
+    }
+
+    // Now decode emojis
+    const emojis = try decodeEmojis(&decoder, allocator);
+    defer {
+        for (emojis) |emoji| {
+            allocator.free(emoji.normalized);
+            allocator.free(emoji.beautified);
+        }
+        allocator.free(emojis);
+    }
+
+    // Should have many emoji sequences
+    try std.testing.expect(emojis.len > 100);
+
+    // Check that normalized and beautified differ for some emojis (FE0F handling)
+    var has_fe0f = false;
+    for (emojis) |emoji| {
+        if (emoji.normalized.len < emoji.beautified.len) {
+            has_fe0f = true;
+            break;
+        }
+    }
+    try std.testing.expect(has_fe0f);
 }
