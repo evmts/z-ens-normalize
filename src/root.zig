@@ -112,10 +112,8 @@ fn initSingleton() void {
     //
     // For now, use a stub init that works with the current structure
     // The methods are stubbed with @panic anyway, so this is acceptable
-    singleton_instance = Ensip15.init(std.heap.page_allocator) catch |err| {
-        _ = err;
+    singleton_instance = Ensip15.init(std.heap.page_allocator) catch
         @panic("Failed to initialize ENSIP15 singleton");
-    };
 }
 
 /// Thread-safe singleton initialization guard.

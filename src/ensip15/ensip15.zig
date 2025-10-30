@@ -122,7 +122,7 @@ pub const Ensip15 = struct {
         errdefer nfc_check.deinit(allocator);
 
         // Decode maps
-        const fenced = try init_mod.decodeNamedCodepoints(&decoder, allocator);
+        var fenced = try init_mod.decodeNamedCodepoints(&decoder, allocator);
         errdefer {
             var iter = fenced.valueIterator();
             while (iter.next()) |value| {
@@ -131,7 +131,7 @@ pub const Ensip15 = struct {
             fenced.deinit();
         }
 
-        const mapped = try init_mod.decodeMapped(&decoder, allocator);
+        var mapped = try init_mod.decodeMapped(&decoder, allocator);
         errdefer {
             var iter = mapped.valueIterator();
             while (iter.next()) |value| {
@@ -161,9 +161,9 @@ pub const Ensip15 = struct {
         }
 
         // Decode wholes
-        const wholes_result = try init_mod.decodeWholes(&decoder, groups, allocator);
+        var wholes_result = try init_mod.decodeWholes(&decoder, groups, allocator);
         errdefer {
-            for (wholes_result.wholes) |whole| {
+            for (wholes_result.wholes) |*whole| {
                 whole.valid.deinit(allocator);
                 whole.confused.deinit(allocator);
                 var iter = whole.complements.valueIterator();
@@ -233,13 +233,13 @@ pub const Ensip15 = struct {
         }
 
         const possibly_valid = try RuneSet.fromInts(allocator, blk: {
-            var list = std.ArrayList(i32).init(allocator);
+            var list: std.ArrayList(i32) = .{};
             var pv_iter = possibly_valid_map.keyIterator();
             while (pv_iter.next()) |cp_ptr| {
-                try list.append(@intCast(cp_ptr.*));
+                try list.append(allocator, @intCast(cp_ptr.*));
             }
             std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
-            break :blk try list.toOwnedSlice();
+            break :blk try list.toOwnedSlice(allocator);
         });
         errdefer possibly_valid.deinit(allocator);
 
@@ -254,13 +254,13 @@ pub const Ensip15 = struct {
         }
 
         const unique_non_confusables = try RuneSet.fromInts(allocator, blk: {
-            var list = std.ArrayList(i32).init(allocator);
+            var list: std.ArrayList(i32) = .{};
             var u_iter = union_map.keyIterator();
             while (u_iter.next()) |cp_ptr| {
-                try list.append(@intCast(cp_ptr.*));
+                try list.append(allocator, @intCast(cp_ptr.*));
             }
             std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
-            break :blk try list.toOwnedSlice();
+            break :blk try list.toOwnedSlice(allocator);
         });
         errdefer unique_non_confusables.deinit(allocator);
 
@@ -385,7 +385,7 @@ pub const Ensip15 = struct {
         }
 
         // Free wholes array
-        for (self.wholes) |whole| {
+        for (self.wholes) |*whole| {
             whole.valid.deinit(self.allocator);
             whole.confused.deinit(self.allocator);
             var comp_iter = whole.complements.valueIterator();

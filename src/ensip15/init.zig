@@ -140,14 +140,14 @@ pub fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u2
 pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
     const RuneSet = @import("../util/runeset.zig").RuneSet;
 
-    var groups = std.ArrayList(Group).init(allocator);
+    var groups: std.ArrayList(Group) = .{};
     errdefer {
         for (groups.items) |group| {
             allocator.free(group.name);
             group.primary.deinit(allocator);
             group.secondary.deinit(allocator);
         }
-        groups.deinit();
+        groups.deinit(allocator);
     }
 
     while (true) {
@@ -169,7 +169,7 @@ pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
         defer allocator.free(secondary_ints);
         const secondary = try RuneSet.fromInts(allocator, secondary_ints);
 
-        try groups.append(Group{
+        try groups.append(allocator, Group{
             .index = @intCast(groups.items.len),
             .name = name,
             .restricted = restricted,
@@ -179,7 +179,7 @@ pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
         });
     }
 
-    return try groups.toOwnedSlice();
+    return try groups.toOwnedSlice(allocator);
 }
 
 /// Decode emoji sequences
@@ -204,13 +204,13 @@ pub fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
 fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const u21) ![]EmojiSequence {
     const FE0F: u21 = 0xFE0F;
 
-    var result = std.ArrayList(EmojiSequence).init(allocator);
+    var result: std.ArrayList(EmojiSequence) = .{};
     errdefer {
         for (result.items) |emoji| {
             allocator.free(emoji.normalized);
             allocator.free(emoji.beautified);
         }
-        result.deinit();
+        result.deinit(allocator);
     }
 
     // First loop: leaf emojis (terminal nodes)
@@ -227,12 +227,12 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
         beautified[prev.len] = @intCast(cp);
 
         // Build normalized: beautified with FE0F stripped
-        var normalized_list = std.ArrayList(u21).init(allocator);
-        defer normalized_list.deinit();
+        var normalized_list: std.ArrayList(u21) = .{};
+        defer normalized_list.deinit(allocator);
 
         for (beautified) |x| {
             if (x != FE0F) {
-                try normalized_list.append(x);
+                try normalized_list.append(allocator, x);
             }
         }
 
@@ -240,9 +240,9 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
         const normalized = if (normalized_list.items.len == beautified.len)
             try allocator.dupe(u21, beautified)
         else
-            try normalized_list.toOwnedSlice();
+            try normalized_list.toOwnedSlice(allocator);
 
-        try result.append(EmojiSequence{
+        try result.append(allocator, EmojiSequence{
             .normalized = normalized,
             .beautified = beautified,
         });
@@ -275,14 +275,14 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
 
         // Append all sub-emojis to result
         for (sub_emojis) |emoji| {
-            try result.append(EmojiSequence{
+            try result.append(allocator, EmojiSequence{
                 .normalized = try allocator.dupe(u21, emoji.normalized),
                 .beautified = try allocator.dupe(u21, emoji.beautified),
             });
         }
     }
 
-    return try result.toOwnedSlice();
+    return try result.toOwnedSlice(allocator);
 }
 
 /// Decode whole-script confusables
@@ -305,9 +305,9 @@ pub fn decodeWholes(
     const RuneSet = @import("../util/runeset.zig").RuneSet;
     _ = groups;
 
-    var wholes = std.ArrayList(Whole).init(allocator);
+    var wholes: std.ArrayList(Whole) = .{};
     errdefer {
-        for (wholes.items) |whole| {
+        for (wholes.items) |*whole| {
             whole.valid.deinit(allocator);
             whole.confused.deinit(allocator);
             var iter = whole.complements.valueIterator();
@@ -316,7 +316,7 @@ pub fn decodeWholes(
             }
             whole.complements.deinit();
         }
-        wholes.deinit();
+        wholes.deinit(allocator);
     }
 
     var confusables = std.AutoHashMap(u21, Whole).init(allocator);
@@ -352,7 +352,7 @@ pub fn decodeWholes(
             .complements = complements_map,
         };
 
-        try wholes.append(whole);
+        try wholes.append(allocator, whole);
 
         // Add to confusables map
         for (confused.runes) |cp| {
@@ -365,7 +365,7 @@ pub fn decodeWholes(
     }
 
     return .{
-        .wholes = try wholes.toOwnedSlice(),
+        .wholes = try wholes.toOwnedSlice(allocator),
         .confusables = confusables,
     };
 }
@@ -399,9 +399,9 @@ pub fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode 
 
     for (emojis) |*emoji| {
         // Start with just the root node
-        var nodes = std.ArrayList(*EmojiNode).init(allocator);
-        defer nodes.deinit();
-        try nodes.append(root);
+        var nodes: std.ArrayList(*EmojiNode) = .{};
+        defer nodes.deinit(allocator);
+        try nodes.append(allocator, root);
 
         // Process each codepoint in the beautified sequence
         for (emoji.beautified) |cp| {
@@ -410,7 +410,7 @@ pub fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode 
                 const current_len = nodes.items.len;
                 for (nodes.items[0..current_len]) |node| {
                     const new_node = try node.child(allocator, cp);
-                    try nodes.append(new_node);
+                    try nodes.append(allocator, new_node);
                 }
             } else {
                 // Non-FE0F updates existing branches in place
@@ -621,7 +621,7 @@ test "decodeNamedCodepoints loads fenced characters" {
     defer allocator.free(nfc_check);
 
     // Now decode named codepoints
-    const fenced = try decodeNamedCodepoints(&decoder, allocator);
+    var fenced = try decodeNamedCodepoints(&decoder, allocator);
     defer {
         var iter = fenced.valueIterator();
         while (iter.next()) |value| {
@@ -665,7 +665,7 @@ test "decodeMapped loads character mappings" {
     }
 
     // Now decode mapped
-    const mapped = try decodeMapped(&decoder, allocator);
+    var mapped = try decodeMapped(&decoder, allocator);
     defer {
         var iter = mapped.valueIterator();
         while (iter.next()) |value| {
