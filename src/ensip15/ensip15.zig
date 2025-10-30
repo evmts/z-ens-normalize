@@ -447,20 +447,59 @@ pub const Ensip15 = struct {
 
     /// Check group-specific validation rules
     /// Note: Stubbed for future implementation
-    fn checkGroup(self: *const Ensip15, group: *const Group, chars: []const u21) !void {
-        _ = self;
-        _ = group;
-        _ = chars;
-        @panic("TODO: implement checkGroup()");
+    fn checkGroup(self: *const Ensip15, group: *const Group, chars: []const u21, allocator: Allocator) !void {
+        // Verify all chars in group
+        for (chars) |cp| {
+            if (!group.contains(cp)) {
+                return Error.IllegalMixture;
+            }
+        }
+
+        // Check NSM if not CM whitelisted
+        if (!group.cm_whitelisted) {
+            if (self.nf) |nf| {
+                const decomposed = try nf.nfd(allocator, chars);
+                defer allocator.free(decomposed);
+
+                var i: usize = 1;
+                while (i < decomposed.len) {
+                    if (self.non_spacing_marks.contains(decomposed[i])) {
+                        var j = i + 1;
+                        while (j < decomposed.len) : (j += 1) {
+                            const cp = decomposed[j];
+                            if (!self.non_spacing_marks.contains(cp)) break;
+
+                            // Check for duplicates
+                            for (decomposed[i..j]) |prev_cp| {
+                                if (prev_cp == cp) {
+                                    return Error.NSMDuplicate;
+                                }
+                            }
+                        }
+
+                        const n = j - i;
+                        if (n > self.max_non_spacing_marks) {
+                            return Error.NSMExcessive;
+                        }
+
+                        i = j;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+        }
     }
 
     /// Check for whole confusable sequences
     /// Note: Stubbed for future implementation
-    fn checkWhole(self: *const Ensip15, group: *const Group, unique: []const u21) !void {
+    fn checkWhole(self: *const Ensip15, group: *const Group, unique: []const u21, allocator: Allocator) !void {
         _ = self;
         _ = group;
         _ = unique;
-        @panic("TODO: implement checkWhole()");
+        _ = allocator;
+        // TODO: Implement confusable detection
+        // For now, stub - no confusable checking
     }
 
     /// Convert codepoint to safe display string
