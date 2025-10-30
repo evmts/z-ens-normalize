@@ -127,7 +127,92 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(excl_exe);
 
     // ============================================================
-    // 6. Test Data Copy Step
+    // 6. C FFI Library
+    // ============================================================
+    // Build C-compatible library with exported C functions
+    const c_mod = b.addModule("z_ens_normalize_c", .{
+        .root_source_file = b.path("src/root_c.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    c_mod.addImport("z_ens_normalize", mod);
+
+    const c_lib = b.addLibrary(.{
+        .name = "z_ens_normalize_c",
+        .root_module = c_mod,
+        .linkage = .static,
+    });
+    c_lib.linkLibC();
+
+    // Add build step for C library
+    const c_lib_step = b.step("c-lib", "Build C FFI library");
+    c_lib_step.dependOn(&b.addInstallArtifact(c_lib, .{}).step);
+
+    // Generate C header file
+    const c_header = b.addInstallFile(
+        b.path("include/z_ens_normalize.h"),
+        "include/z_ens_normalize.h",
+    );
+    c_lib_step.dependOn(&c_header.step);
+
+    // ============================================================
+    // 7. WebAssembly Builds
+    // ============================================================
+    // WASM freestanding build (for web browsers, Node.js)
+    const wasm_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+    });
+
+    const wasm_mod = b.addModule("z_ens_normalize_wasm", .{
+        .root_source_file = b.path("src/root_c.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+    });
+    wasm_mod.addImport("z_ens_normalize", mod);
+
+    const wasm_lib = b.addExecutable(.{
+        .name = "z_ens_normalize",
+        .root_module = wasm_mod,
+    });
+    wasm_lib.entry = .disabled;
+    wasm_lib.rdynamic = true;
+
+    // Add build step for WASM
+    const wasm_step = b.step("wasm", "Build WebAssembly module (freestanding)");
+    wasm_step.dependOn(&b.addInstallArtifact(wasm_lib, .{}).step);
+
+    // WASI build (WebAssembly System Interface)
+    const wasi_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .wasi,
+    });
+
+    const wasi_mod = b.addModule("z_ens_normalize_wasi", .{
+        .root_source_file = b.path("src/root_c.zig"),
+        .target = wasi_target,
+        .optimize = optimize,
+    });
+    wasi_mod.addImport("z_ens_normalize", mod);
+
+    const wasi_lib = b.addExecutable(.{
+        .name = "z_ens_normalize_wasi",
+        .root_module = wasi_mod,
+    });
+    wasi_lib.entry = .disabled;
+    wasi_lib.rdynamic = true;
+
+    // Add build step for WASI
+    const wasi_step = b.step("wasi", "Build WebAssembly module (WASI)");
+    wasi_step.dependOn(&b.addInstallArtifact(wasi_lib, .{}).step);
+
+    // Build both WASM variants
+    const wasm_all_step = b.step("wasm-all", "Build all WebAssembly variants");
+    wasm_all_step.dependOn(wasm_step);
+    wasm_all_step.dependOn(wasi_step);
+
+    // ============================================================
+    // 8. Test Data Copy Step
     // ============================================================
     // Create a step to copy test data files (JSON files) to zig-out/test-data/
     // This is useful for tests that need to load external data files
