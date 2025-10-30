@@ -134,6 +134,8 @@ pub const Decoder = struct {
                 }
             }
 
+            // Sort the result (matches reference implementation in utils.js:135)
+            std.mem.sort(i32, new_v, {}, comptime std.sort.asc(i32));
             return new_v;
         }
 
