@@ -916,3 +916,1387 @@ Follow [algorithm](#algorithm), except:
 - Replace `3BE (ξ) GREEK SMALL LETTER XI` with `39E (Ξ) GREEK CAPITAL LETTER XI` if the label isn't _Greek_.
 - Example: `normalize("‐Ξ1️⃣") [2010 39E 31 FE0F 20E3]` is `"-ξ1⃣" [2D 3BE 31 20E3]`
 - Example: `beautify("-ξ1⃣") [2D 3BE 31 20E3]"` is `"-Ξ1️⃣" [2D 39E 31 FE0F 20E3]`
+
+# Complete File Tree for go-ens-normalize
+
+We are using the go implementation as our reference code and doing a 1 to 1 port
+
+go-ens-normalize/
+├── .git/ # Git repository metadata
+├── .gitignore # Git ignore patterns
+├── LICENSE # Project license
+├── README.md # Project documentation and usage examples
+├── FUNDING.json # Funding/sponsorship information
+├── go.mod # Go module definition
+│
+├── compress/ # Compression tooling for spec data
+│ ├── README.md # Build instructions for compression process
+│ ├── download.sh # Downloads latest ENSIP-15 spec and test data
+│ ├── make.js # Compresses spec into binary format
+│ ├── package.json # Node.js dependencies for compression tools
+│ ├── BitReader.js # Reads compressed bit-packed data
+│ ├── BitWriter.js # Writes bit-packed compressed data
+│ ├── Encoder.js # Encodes spec data into compressed format
+│ ├── Magic.js # Magic number encoding utilities
+│ ├── utils.js # Compression utility functions
+│ └── data/
+│ ├── nf.json # Unicode normalization form data
+│ └── spec.json # ENSIP-15 specification data
+│
+├── ensip15/ # Core ENSIP-15 implementation
+│ ├── spec.bin # Compressed binary spec data (embedded)
+│ ├── tests.json # ENSIP-15 validation test cases
+│ ├── ensip15.go # Main entry point: New(), Normalize(), Beautify()
+│ ├── ensip15_test.go # ENSIP-15 validation tests
+│ ├── errors.go # Error definitions (ErrDisallowedCharacter, etc.)
+│ ├── emojis.go # Emoji sequence parsing and tree structure
+│ ├── getters.go # Public getter methods for internal state
+│ ├── groups.go # Script group validation (Latin, Greek, etc.)
+│ ├── output.go # Output tokenization (text vs emoji tokens)
+│ ├── shared.go # Singleton instance and global Normalize/Beautify
+functions
+│ ├── utils.go # Utility functions (Split, Join, SafeCodepoint, etc.)
+│ └── wholes.go # Whole-script confusable detection
+│
+├── nf/ # Unicode Normalization Forms (NFC/NFD)
+│ ├── nf.bin # Compressed normalization data (embedded)
+│ ├── nf-tests.json # Unicode normalization test cases
+│ ├── nf.go # NFC/NFD implementation with Hangul support
+│ └── nf_test.go # Normalization tests
+│
+└── util/ # Shared utilities
+├── decoder.go # Decodes compressed binary data
+└── runeset.go # Efficient rune set data structure
+
+What Each File Does
+
+Root Level
+
+- README.md: Documentation with API examples, usage instructions
+- go.mod: Defines Go module github.com/adraffy/go-ens-normalize
+- LICENSE: Project license terms
+- FUNDING.json: GitHub sponsorship configuration
+
+compress/ - Build Tooling
+
+- download.sh: Downloads latest ENSIP-15 spec from reference implementation
+- make.js: Compresses spec.json and nf.json into .bin files
+- BitReader/Writer.js: Bit-level I/O for compression
+- Encoder.js: Encodes arrays/strings into compressed format
+- Magic.js: Variable-length integer encoding
+- data/\*.json: Source data files for compression
+
+ensip15/ - Core Library
+
+- ensip15.go: Main implementation with New(), Normalize(), Beautify(),
+  NormalizeFragment()
+- shared.go: Thread-safe singleton pattern + global panic-on-error functions
+- errors.go: All error types (invalid label, illegal mixture, confusables, etc.)
+- groups.go: Validates script groups (determines if name uses Latin/Greek/etc., checks
+  mixing rules)
+- emojis.go: Parses emoji sequences, builds trie for emoji detection
+- output.go: Tokenizes input into text/emoji tokens for processing
+- utils.go: String manipulation (Split/Join labels, hex formatting, safe display)
+- wholes.go: Detects whole-script confusables (e.g., Cyrillic that looks like Latin)
+- getters.go: Public accessors for internal data structures
+- spec.bin: Embedded compressed ENSIP-15 specification data
+- tests.json: Validation test cases from reference implementation
+
+nf/ - Unicode Normalization
+
+- nf.go: Implements NFC (composed) and NFD (decomposed) normalization with Hangul
+  syllable handling
+- nf.bin: Embedded compressed Unicode normalization tables
+- nf-tests.json: Unicode normalization test cases
+
+util/ - Shared Utilities
+
+- decoder.go: Decodes compressed binary data (reads sorted/unsorted/unique arrays,
+  strings)
+- runeset.go: Sorted rune set with binary search for efficient membership testing
+
+There is a download.sh script they have
+
+The download.sh script is straightforward - it uses curl to download 4 JSON files from
+the reference implementation repository:
+
+Lines 4-5: Download spec data
+
+- Saves spec.json to ./data/spec.json
+- Saves nf.json to ./data/nf.json
+
+Lines 8-9: Download test files
+
+- Saves tests.json to ../ensip15/tests.json (ENSIP-15 validation tests)
+- Saves nf-tests.json to ../nf/nf-tests.json (Unicode normalization tests)
+
+All files come from the adraffy/ens-normalize.js repository's main branch, ensuring the
+Go implementation stays synchronized with the reference JavaScript implementation.
+
+<ensip15.go>
+
+```go
+package ensip15
+
+import (
+\_ "embed"
+"fmt"
+"sort"
+
+    "github.com/adraffy/go-ens-normalize/nf"
+    "github.com/adraffy/go-ens-normalize/util"
+
+)
+
+//go:embed spec.bin
+var compressed []byte
+
+type ENSIP15 struct {
+nf *nf.NF
+shouldEscape util.RuneSet
+ignored util.RuneSet
+combiningMarks util.RuneSet
+nonSpacingMarks util.RuneSet
+maxNonSpacingMarks int
+nfcCheck util.RuneSet
+fenced map[rune]string
+mapped map[rune][]rune
+groups []*Group
+emojis []EmojiSequence
+emojiRoot *EmojiNode
+possiblyValid util.RuneSet
+wholes []Whole
+confusables map[rune]Whole
+uniqueNonConfusables util.RuneSet
+\_LATIN *Group
+\_GREEK *Group
+\_ASCII *Group
+\_EMOJI \*Group
+}
+
+func decodeNamedCodepoints(d \*util.Decoder) map[rune]string {
+ret := make(map[rune]string)
+for \_, cp := range d.ReadSortedAscending(d.ReadUnsigned()) {
+ret[rune(cp)] = d.ReadString()
+}
+return ret
+}
+
+func decodeMapped(d \*util.Decoder) map[rune][]rune {
+ret := make(map[rune][]rune)
+for {
+w := d.ReadUnsigned()
+if w == 0 {
+break
+}
+keys := d.ReadSortedUnique()
+n := len(keys)
+m := make([][]rune, n)
+for i := 0; i < n; i++ {
+m[i] = make([]rune, w)
+}
+for j := 0; j < w; j++ {
+v := d.ReadUnsortedDeltas(n)
+for i := 0; i < n; i++ {
+m[i][j] = rune(v[i])
+}
+}
+for i := 0; i < n; i++ {
+ret[rune(keys[i])] = m[i]
+}
+}
+return ret
+}
+
+func New() \*ENSIP15 {
+d := util.NewDecoder(compressed)
+l := ENSIP15{}
+l.nf = nf.New()
+l.shouldEscape = util.NewRuneSetFromInts(d.ReadUnique())
+l.ignored = util.NewRuneSetFromInts(d.ReadUnique())
+l.combiningMarks = util.NewRuneSetFromInts(d.ReadUnique())
+l.maxNonSpacingMarks = d.ReadUnsigned()
+l.nonSpacingMarks = util.NewRuneSetFromInts(d.ReadUnique())
+l.nfcCheck = util.NewRuneSetFromInts(d.ReadUnique())
+l.fenced = decodeNamedCodepoints(d)
+l.mapped = decodeMapped(d)
+l.groups = decodeGroups(d)
+l.emojis = decodeEmojis(d, nil)
+l.wholes, l.confusables = decodeWholes(d, l.groups)
+d.AssertEOF()
+
+    sort.Slice(l.emojis, func(i, j int) bool {
+    	return compareRunes(l.emojis[i].normalized, l.emojis[j].normalized) < 0
+    })
+
+    l.emojiRoot = makeEmojiTree(l.emojis)
+
+    union := make(map[rune]bool)
+    multi := make(map[rune]bool)
+    for _, g := range l.groups {
+    	for _, cp := range append(g.primary.ToArray(), g.secondary.ToArray()...) {
+    		if union[cp] {
+    			multi[cp] = true
+    		} else {
+    			union[cp] = true
+    		}
+    	}
+    }
+
+    possiblyValid := make(map[rune]bool)
+    for cp := range union {
+    	possiblyValid[cp] = true
+    	for _, cp := range l.nf.NFD([]rune{cp}) {
+    		possiblyValid[cp] = true
+    	}
+    }
+    l.possiblyValid = util.NewRuneSetFromKeys(possiblyValid)
+
+    for cp := range multi {
+    	delete(union, cp)
+    }
+    for cp := range l.confusables {
+    	delete(union, cp)
+    }
+    l.uniqueNonConfusables = util.NewRuneSetFromKeys(union)
+
+    // direct group references
+    l._LATIN = l.FindGroup("Latin")
+    l._GREEK = l.FindGroup("Greek")
+    l._ASCII = &Group{
+    	index:         -1,
+    	restricted:    false,
+    	name:          "ASCII",
+    	cmWhitelisted: false,
+    	primary:       l.possiblyValid.Filter(func(cp rune) bool { return cp < 0x80 }),
+    }
+    l._EMOJI = &Group{
+    	index:         -1,
+    	restricted:    false,
+    	cmWhitelisted: false,
+    }
+    return &l
+
+}
+
+func (l \*ENSIP15) Normalize(name string) (string, error) {
+return l.transform(
+name,
+l.nf.NFC,
+func(e EmojiSequence) []rune { return e.normalized },
+func(tokens []OutputToken) (string, error) {
+cps := FlattenTokens(tokens)
+\_, err := l.checkValidLabel(cps, tokens)
+if err != nil {
+return "", err
+}
+return string(cps), nil
+},
+)
+}
+
+func (l \*ENSIP15) Beautify(name string) (string, error) {
+return l.transform(
+name,
+l.nf.NFC,
+func(e EmojiSequence) []rune { return e.beautified },
+func(tokens []OutputToken) (string, error) {
+cps := FlattenTokens(tokens)
+g, err := l.checkValidLabel(cps, tokens)
+if err != nil {
+return "", err
+}
+if g != l.\_GREEK {
+for i, x := range cps {
+// ξ => Ξ if not greek
+if x == 0x3BE {
+cps[i] = 0x39E
+}
+}
+}
+return string(cps), nil
+},
+)
+}
+
+func (l \*ENSIP15) NormalizeFragment(frag string, decompose bool) (string, error) {
+nf := l.nf.NFC
+if decompose {
+nf = l.nf.NFD
+}
+return l.transform(
+frag,
+nf,
+func(e EmojiSequence) []rune { return e.normalized },
+func(tokens []OutputToken) (string, error) {
+return string(FlattenTokens(tokens)), nil
+},
+)
+}
+
+func (l \*ENSIP15) transform(
+name string,
+nf func([]rune) []rune,
+ef func(EmojiSequence) []rune,
+normalizer func(tokens []OutputToken) (string, error),
+) (string, error) {
+labels := Split(name)
+for i, label := range labels {
+cps := []rune(label)
+tokens, err := l.outputTokenize(cps, nf, ef)
+if err == nil {
+var norm string
+norm, err = normalizer(tokens)
+if err == nil {
+labels[i] = norm
+continue
+}
+}
+if len(labels) > 0 {
+err = fmt.Errorf("invalid label \"%s\": %w", l.SafeImplode(cps), err)
+}
+return "", err
+}
+return Join(labels), nil
+}
+
+func checkLeadingUnderscore(cps []rune) error {
+const UNDERSCORE = 0x5F
+allowed := true
+for \_, cp := range cps {
+if allowed {
+if cp != UNDERSCORE {
+allowed = false
+}
+} else {
+if cp == UNDERSCORE {
+return ErrLeadingUnderscore
+}
+}
+}
+return nil
+}
+
+func checkLabelExtension(cps []rune) error {
+const HYPHEN = 0x2D
+if len(cps) >= 4 && cps[2] == HYPHEN && cps[3] == HYPHEN {
+return fmt.Errorf("%w: %s", ErrInvalidLabelExtension, string(cps[:4]))
+}
+return nil
+}
+
+func (l \*ENSIP15) checkCombiningMarks(tokens []OutputToken) error {
+for i, x := range tokens {
+if x.Emoji == nil {
+cp := x.Codepoints[0]
+if l.combiningMarks.Contains(cp) {
+if i == 0 {
+return fmt.Errorf("%v: %s", ErrCMLeading, l.SafeCodepoint(cp))
+} else {
+return fmt.Errorf("%v: %s + %s", ErrCMAfterEmoji, tokens[i-1].Emoji.Beautified(), l.SafeCodepoint(cp))
+}
+}
+}
+}
+return nil
+}
+
+func (l \*ENSIP15) checkFenced(cps []rune) error {
+name, ok := l.fenced[cps[0]]
+if ok {
+return fmt.Errorf("%w: %s", ErrFencedLeading, name)
+}
+n := len(cps)
+lastPos := -1
+var lastName string
+for i := 1; i < n; i++ {
+name, ok := l.fenced[cps[i]]
+if ok {
+if lastPos == i {
+return fmt.Errorf("%w: %s + %s", ErrFencedAdjacent, lastName, name)
+}
+lastPos = i + 1
+lastName = name
+}
+}
+if lastPos == n {
+return fmt.Errorf("%w: %s", ErrFencedTrailing, lastName)
+}
+return nil
+}
+
+func (l *ENSIP15) checkValidLabel(cps []rune, tokens []OutputToken) (*Group, error) {
+if len(cps) == 0 {
+return nil, ErrEmptyLabel
+}
+if err := checkLeadingUnderscore(cps); err != nil {
+return nil, err
+}
+hasEmoji := len(tokens) > 1 || tokens[0].Emoji != nil
+if !hasEmoji && isASCII(cps) {
+if err := checkLabelExtension(cps); err != nil {
+return nil, err
+}
+return l._ASCII, nil
+}
+chars := make([]rune, 0, len(cps))
+for _, t := range tokens {
+if t.Emoji == nil {
+chars = append(chars, t.Codepoints...)
+}
+}
+if hasEmoji && len(chars) == 0 {
+return l.\_EMOJI, nil
+}
+if err := l.checkCombiningMarks(tokens); err != nil {
+return nil, err
+}
+if err := l.checkFenced(cps); err != nil {
+return nil, err
+}
+unique := uniqueRunes(chars)
+group, err := l.determineGroup(unique)
+if err != nil {
+return nil, err
+}
+if err := l.checkGroup(group, chars); err != nil {
+return nil, err
+}
+if err := l.checkWhole(group, unique); err != nil {
+return nil, err
+}
+return group, nil
+}
+</ensip15.go>
+
+<decoder.go>
+package util
+
+import (
+"fmt"
+"sort"
+)
+
+type Decoder struct {
+buf []byte
+pos int
+magic []int
+word byte
+bit byte
+}
+
+func asSigned(i int) int {
+if (i & 1) != 0 {
+return ^i >> 1
+} else {
+return i >> 1
+}
+}
+
+func NewDecoder(v []byte) \*Decoder {
+var d = &Decoder{}
+d.buf = v
+d.magic = d.readMagic()
+return d
+}
+
+func (d \*Decoder) AssertEOF() {
+if d.pos < len(d.buf) {
+panic(fmt.Sprintf("expected eof: %d/%d", d.pos, len(d.buf)))
+}
+}
+
+func (d \*Decoder) readMagic() []int {
+var list []int
+w := 0
+for {
+dw := d.readUnary()
+if dw == 0 {
+break
+}
+w += dw
+list = append(list, w)
+}
+return list
+}
+
+func (d \*Decoder) readBit() bool {
+if d.bit == 0 {
+d.word = d.buf[d.pos]
+d.pos++
+d.bit = 1
+}
+bit := (d.word & d.bit) != 0
+d.bit <<= 1
+return bit
+}
+
+func (d \*Decoder) readUnary() int {
+x := 0
+for d.readBit() {
+x++
+}
+return x
+}
+
+func (d \*Decoder) readBinary(w int) int {
+x := 0
+for b := 1 << (w - 1); b != 0; b >>= 1 {
+if d.readBit() {
+x |= b
+}
+}
+return x
+}
+
+func (d \*Decoder) ReadUnsigned() int {
+a := 0
+var w int
+for i := 0; ; i++ {
+w = d.magic[i]
+n := 1 << w
+if i+1 == len(d.magic) || !d.readBit() {
+break
+}
+a += n
+}
+return a + d.readBinary(w)
+}
+
+func (d \*Decoder) readArray(n int, fn func(prev, x int) int) []int {
+v := make([]int, n)
+prev := -1
+for i := 0; i < n; i++ {
+v[i] = fn(prev, d.ReadUnsigned())
+prev = v[i]
+}
+return v
+}
+
+func (d \*Decoder) ReadSortedAscending(n int) []int {
+return d.readArray(n, func(prev, x int) int { return prev + 1 + x })
+}
+
+func (d \*Decoder) ReadUnsortedDeltas(n int) []int {
+return d.readArray(n, func(prev, x int) int { return prev + asSigned(x) })
+}
+
+func (d \*Decoder) ReadString() string {
+v := d.ReadUnsortedDeltas(d.ReadUnsigned())
+cps := make([]rune, len(v))
+for i, x := range v {
+cps[i] = rune(x)
+}
+return string(cps)
+}
+
+func (d \*Decoder) ReadUnique() []int {
+v := d.ReadSortedAscending(d.ReadUnsigned())
+n := d.ReadUnsigned()
+if n > 0 {
+vX := d.ReadSortedAscending(n)
+vS := d.ReadUnsortedDeltas(n)
+for i := 0; i < n; i++ {
+for x, e := vX[i], vX[i]+vS[i]; x < e; x++ {
+v = append(v, x)
+}
+}
+}
+return v
+}
+
+func (d \*Decoder) ReadSortedUnique() []int {
+v := d.ReadUnique()
+sort.Ints(v)
+return v
+}
+</decoder.go>
+
+<nf.go>
+package nf
+
+import (
+\_ "embed"
+
+    "github.com/adraffy/go-ens-normalize/util"
+
+)
+
+//go:embed nf.bin
+var compressed []byte
+
+const (
+SHIFT rune = 24
+MASK rune = (1 << SHIFT) - 1
+NONE rune = -1
+)
+
+const (
+S0 = 0xAC00
+L0 = 0x1100
+V0 = 0x1161
+T0 = 0x11A7
+L_COUNT = 19
+V_COUNT = 21
+T_COUNT = 28
+N_COUNT = V_COUNT _ T_COUNT
+S_COUNT = L_COUNT _ N_COUNT
+S1 = S0 + S_COUNT
+L1 = L0 + L_COUNT
+V1 = V0 + V_COUNT
+T1 = T0 + T_COUNT
+)
+
+func isHangul(cp rune) bool {
+return cp >= S0 && cp < S1
+}
+func unpackCC(packed rune) byte {
+return byte(packed >> SHIFT)
+}
+func unpackCP(packed rune) rune {
+return rune(packed & MASK)
+}
+
+type NF struct {
+unicodeVersion string
+exclusions util.RuneSet
+quickCheck util.RuneSet
+decomps map[rune][]rune
+recomps map[rune]map[rune]rune
+ranks map[rune]byte
+}
+
+func New() \*NF {
+d := util.NewDecoder(compressed)
+self := NF{}
+self.unicodeVersion = d.ReadString()
+self.exclusions = util.NewRuneSetFromInts(d.ReadUnique())
+self.quickCheck = util.NewRuneSetFromInts(d.ReadUnique())
+self.decomps = make(map[rune][]rune)
+self.recomps = make(map[rune]map[rune]rune)
+self.ranks = make(map[rune]byte)
+
+    decomp1 := d.ReadSortedUnique()
+    decomp1A := d.ReadUnsortedDeltas(len(decomp1))
+    for i, cp := range decomp1 {
+    	self.decomps[rune(cp)] = []rune{rune(decomp1A[i])}
+    }
+    decomp2 := d.ReadSortedUnique()
+    decomp2A := d.ReadUnsortedDeltas(len(decomp2))
+    decomp2B := d.ReadUnsortedDeltas(len(decomp2))
+    for i, cp := range decomp2 {
+    	cp := rune(cp)
+    	cpA := rune(decomp2A[i])
+    	cpB := rune(decomp2B[i])
+    	self.decomps[cp] = []rune{cpB, cpA}
+    	if !self.exclusions.Contains((cp)) {
+    		recomp := self.recomps[cpA]
+    		if recomp == nil {
+    			recomp = make(map[rune]rune)
+    			self.recomps[cpA] = recomp
+    		}
+    		recomp[cpB] = cp
+    	}
+    }
+    for i := 1; ; i++ {
+    	v := d.ReadUnique()
+    	if len(v) == 0 {
+    		break
+    	}
+    	for _, cp := range v {
+    		self.ranks[rune(cp)] = byte(i)
+    	}
+    }
+    d.AssertEOF()
+    return &self
+
+}
+
+func (nf *NF) composePair(a, b rune) rune {
+if a >= L0 && a < L1 && b >= V0 && b < V1 {
+return S0 + (a-L0)*N_COUNT + (b-V0)\*T_COUNT
+} else if isHangul(a) && b > T0 && b < T1 && (a-S0)%T_COUNT == 0 {
+return a + (b - T0)
+} else {
+if recomp, ok := nf.recomps[a]; ok {
+if cp, ok := recomp[b]; ok {
+return cp
+}
+}
+return NONE
+}
+}
+
+type Packer struct {
+nf \*NF
+buf []rune
+check bool
+}
+
+func (p \*Packer) add(cp rune) {
+if cc, ok := p.nf.ranks[cp]; ok {
+p.check = true
+cp |= rune(cc) << SHIFT
+}
+p.buf = append(p.buf, cp)
+}
+
+func (p \*Packer) fixOrder() {
+if !p.check {
+return
+}
+v := p.buf
+prev := unpackCC(v[0])
+for i := 1; i < len(v); i++ {
+cc := unpackCC(v[i])
+if cc == 0 || prev <= cc {
+prev = cc
+continue
+}
+j := i - 1
+for {
+v[j+1], v[j] = v[j], v[j+1]
+if j == 0 {
+break
+}
+j--
+prev = unpackCC(v[j])
+if prev <= cc {
+break
+}
+}
+prev = unpackCC(v[i])
+}
+}
+
+func (nf \*NF) decomposed(cps []rune) []rune {
+p := Packer{nf: nf}
+var buf []rune
+for \_, cp0 := range cps {
+cp := cp0
+for {
+if cp < 0x80 {
+p.buf = append(p.buf, cp)
+} else if isHangul(cp) {
+sIndex := cp - S0
+lIndex := sIndex / N_COUNT
+vIndex := (sIndex % N_COUNT) / T_COUNT
+tIndex := sIndex % T_COUNT
+p.add(L0 + lIndex)
+p.add(V0 + vIndex)
+if tIndex > 0 {
+p.add(T0 + tIndex)
+}
+} else {
+if decomp, ok := nf.decomps[cp]; ok {
+buf = append(buf, decomp...)
+} else {
+p.add(cp)
+}
+}
+if len(buf) == 0 {
+break
+}
+last := len(buf) - 1
+cp = buf[last]
+buf = buf[:last]
+}
+}
+
+    p.fixOrder()
+    return p.buf
+
+}
+
+func (nf \*NF) composedFromPacked(packed []rune) []rune {
+cps := make([]rune, 0, len(packed))
+var stack []rune
+prevCp := NONE
+var prevCc byte
+for \_, p := range packed {
+cc := unpackCC(p)
+cp := unpackCP(p)
+if prevCp == NONE {
+if cc == 0 {
+prevCp = cp
+} else {
+cps = append(cps, cp)
+}
+} else if prevCc > 0 && prevCc >= cc {
+if cc == 0 {
+cps = append(cps, prevCp)
+cps = append(cps, stack...)
+stack = nil
+prevCp = cp
+} else {
+stack = append(stack, cp)
+}
+prevCc = cc
+} else {
+composed := nf.composePair(prevCp, cp)
+if composed != NONE {
+prevCp = composed
+} else if prevCc == 0 && cc == 0 {
+cps = append(cps, prevCp)
+prevCp = cp
+} else {
+stack = append(stack, cp)
+prevCc = cc
+}
+}
+}
+if prevCp != NONE {
+cps = append(cps, prevCp)
+cps = append(cps, stack...)
+}
+return cps
+}
+
+func (nf *NF) NFD(cps []rune) []rune {
+v := nf.decomposed(cps)
+for i, x := range v {
+v[i] = unpackCP(x)
+}
+return v
+}
+func (nf *NF) NFC(cps []rune) []rune {
+return nf.composedFromPacked(nf.decomposed(cps))
+}
+
+func (nf \*NF) UnicodeVersion() string {
+return nf.unicodeVersion
+}
+
+```
+
+</nf.go>
+
+<groups.go>
+
+```go
+package ensip15
+
+import (
+"fmt"
+"slices"
+
+    "github.com/adraffy/go-ens-normalize/util"
+
+)
+
+type Group struct {
+index int
+name string
+restricted bool
+cmWhitelisted bool
+primary util.RuneSet
+secondary util.RuneSet
+}
+
+func (g *Group) Name() string {
+return g.name
+}
+func (g *Group) String() string {
+if g.restricted {
+return fmt.Sprintf("Restricted[%s]", g.name)
+} else {
+return g.name
+}
+}
+func (g *Group) IsRestricted() bool {
+return g.restricted
+}
+func (g *Group) Contains(cp rune) bool {
+return g.primary.Contains(cp) || g.secondary.Contains(cp)
+}
+
+func (l *ENSIP15) FindGroup(name string) *Group {
+i := slices.IndexFunc(l.groups, func(g \*Group) bool {
+return g.name == name
+})
+return l.groups[i]
+}
+
+func decodeGroups(d *util.Decoder) (ret []*Group) {
+for {
+name := d.ReadString()
+if len(name) == 0 {
+break
+}
+bits := d.ReadUnsigned()
+ret = append(ret, &Group{
+index: len(ret),
+name: name,
+restricted: (bits & 1) != 0,
+cmWhitelisted: (bits & 2) != 0,
+primary: util.NewRuneSetFromInts(d.ReadUnique()),
+secondary: util.NewRuneSetFromInts(d.ReadUnique()),
+})
+}
+return ret
+}
+
+func (l *ENSIP15) determineGroup(unique []rune) (*Group, error) {
+gs := slices.Clone(l.groups)
+prev := len(gs)
+for _, cp := range unique {
+next := 0
+for i := 0; i < prev; i++ {
+if gs[i].Contains(cp) {
+gs[next] = gs[i]
+next++
+}
+}
+if next == 0 {
+for _, g := range gs {
+if g.Contains(cp) {
+return nil, l.createMixtureError(gs[0], cp)
+}
+}
+return nil, fmt.Errorf("%w: %s", ErrDisallowedCharacter, l.SafeCodepoint(cp))
+}
+prev = next
+if prev == 1 {
+break
+}
+}
+return gs[0], nil
+}
+
+func (l *ENSIP15) checkGroup(group *Group, cps []rune) error {
+for \_, cp := range cps {
+if !group.Contains(cp) {
+return l.createMixtureError(group, cp)
+}
+}
+if !group.cmWhitelisted {
+decomposed := l.nf.NFD(cps)
+e := len(decomposed)
+for i := 1; i < e; i++ {
+if l.nonSpacingMarks.Contains(decomposed[i]) {
+j := i + 1
+for ; j < e; j++ {
+cp := decomposed[j]
+if !l.nonSpacingMarks.Contains(cp) {
+break
+}
+for k := i; k < j; k++ {
+if decomposed[k] == cp {
+return fmt.Errorf("%w: %s", ErrNSMDuplicate, l.SafeCodepoint((cp)))
+}
+}
+}
+n := j - i
+if n > l.maxNonSpacingMarks {
+return fmt.Errorf("%w: %s (%d/%d)", ErrNSMExcessive, l.SafeImplode(decomposed[i-1:j]), n, l.maxNonSpacingMarks)
+}
+i = j
+}
+}
+}
+return nil
+}
+
+```
+
+</groups.go>
+
+<emojis.go>
+
+```go
+package ensip15
+
+import (
+	"github.com/adraffy/go-ens-normalize/util"
+)
+
+const (
+	FE0F = 0xFE0F
+	ZWJ  = 0x200D
+)
+
+type EmojiSequence struct {
+	normalized []rune
+	beautified []rune
+}
+
+func (seq EmojiSequence) Normalized() string {
+	return string(seq.normalized)
+}
+func (seq EmojiSequence) Beautified() string {
+	return string(seq.beautified)
+}
+func (seq EmojiSequence) String() string {
+	return seq.Beautified()
+}
+func (seq EmojiSequence) IsMangled() bool {
+	return len(seq.normalized) < len(seq.beautified)
+}
+func (seq EmojiSequence) HasZWJ() bool {
+	for _, x := range seq.beautified {
+		if x == ZWJ {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeEmojis(d *util.Decoder, prev []rune) (v []EmojiSequence) {
+	for _, cp := range d.ReadSortedAscending(d.ReadUnsigned()) {
+		beautified := make([]rune, 0, len(prev)+1)
+		beautified = append(beautified, prev...)
+		beautified = append(beautified, rune(cp))
+		normalized := make([]rune, 0, len(beautified))
+		for _, x := range beautified {
+			if x != FE0F {
+				normalized = append(normalized, x)
+			}
+		}
+		if len(normalized) == len(beautified) {
+			normalized = beautified
+		}
+		v = append(v, EmojiSequence{
+			normalized,
+			beautified,
+		})
+	}
+	for _, cp := range d.ReadSortedAscending(d.ReadUnsigned()) {
+		v = append(v, decodeEmojis(d, append(prev, rune(cp)))...)
+	}
+	return v
+}
+
+type EmojiNode struct {
+	emoji    *EmojiSequence
+	children map[rune]*EmojiNode
+}
+
+func (node *EmojiNode) Child(cp rune) *EmojiNode {
+	if node.children == nil {
+		node.children = make(map[rune]*EmojiNode)
+	}
+	child, ok := node.children[cp]
+	if !ok {
+		child = &EmojiNode{}
+		node.children[cp] = child
+	}
+	return child
+}
+
+func makeEmojiTree(all []EmojiSequence) *EmojiNode {
+	root := &EmojiNode{}
+	for _, emoji := range all {
+		v := []*EmojiNode{root}
+		for _, cp := range emoji.beautified {
+			if cp == FE0F {
+				for _, node := range v {
+					v = append(v, node.Child(cp))
+				}
+			} else {
+				for i, node := range v {
+					v[i] = node.Child(cp)
+				}
+			}
+		}
+		for _, node := range v {
+			node.emoji = &emoji
+		}
+	}
+	return root
+}
+
+func (l *ENSIP15) ParseEmojiAt(cps []rune, pos int) (emoji *EmojiSequence, end int) {
+	end = -1
+	node := l.emojiRoot
+	for pos < len(cps) {
+		if node.children == nil {
+			break
+		}
+		node = node.children[cps[pos]]
+		if node == nil {
+			break
+		}
+		pos++
+		if node.emoji != nil {
+			emoji = node.emoji
+			end = pos
+		}
+	}
+	return emoji, end
+}
+
+```
+
+</emojis.go>
+
+<output.go>
+
+```go
+package ensip15
+
+import (
+	"fmt"
+)
+
+type OutputToken struct {
+	Codepoints []rune
+	Emoji      *EmojiSequence
+}
+
+func (ot OutputToken) String() string {
+	if ot.Emoji != nil {
+		return fmt.Sprintf("Emoji[%s]", ToHexSequence(ot.Emoji.normalized))
+	} else {
+		return fmt.Sprintf("Text[%s]", ToHexSequence(ot.Codepoints))
+	}
+}
+
+func FlattenTokens(tokens []OutputToken) []rune {
+	n := 0
+	for _, x := range tokens {
+		n += len(x.Codepoints)
+	}
+	cps := make([]rune, 0, n)
+	for _, x := range tokens {
+		cps = append(cps, x.Codepoints...)
+	}
+	return cps
+}
+
+func (l *ENSIP15) outputTokenize(
+	cps []rune,
+	nf func([]rune) []rune,
+	ef func(EmojiSequence) []rune,
+) (tokens []OutputToken, err error) {
+	var buf []rune
+	for i := 0; i < len(cps); {
+		emoji, end := l.ParseEmojiAt(cps, i)
+		if emoji != nil {
+			if len(buf) > 0 {
+				tokens = append(tokens, OutputToken{
+					Codepoints: nf(buf),
+				})
+				buf = nil
+			}
+			tokens = append(tokens, OutputToken{
+				Codepoints: ef(*emoji),
+				Emoji:      emoji,
+			})
+			i = end
+		} else {
+			cp := cps[i]
+			if l.possiblyValid.Contains(cp) {
+				buf = append(buf, cp)
+			} else if mapped, ok := l.mapped[cp]; ok {
+				buf = append(buf, mapped...)
+			} else if !l.ignored.Contains(cp) {
+				return nil, fmt.Errorf("%w: %s", ErrDisallowedCharacter, l.SafeCodepoint(cp))
+			}
+			i++
+		}
+	}
+	if len(buf) > 0 {
+		tokens = append(tokens, OutputToken{
+			Codepoints: nf(buf),
+		})
+	}
+	return tokens, nil
+}
+
+```
+
+</output.go>
+
+Here is our implementation plan:
+
+# Implementation plan
+
+ENS Normalize Zig Port - Implementation Plan │ │
+│ │ │ │
+│ │ Proposed Zig Public Interface │ │
+│ │ │ │
+│ │ // src/root.zig - Main public API │ │
+│ │ pub const Ensip15 = struct { │ │
+│ │ pub fn init() Ensip15; │ │
+│ │ │ │
+│ │ // Allocator passed explicitly to methods that allocate │ │
+│ │ pub fn normalize(self: *Ensip15, allocator: std.mem.Allocator, name: []const u8) │ │
+│ │ ![]u8; │ │
+│ │ pub fn beautify(self: *Ensip15, allocator: std.mem.Allocator, name: []const u8) │ │
+│ │ ![]u8; │ │
+│ │ pub fn normalizeFragment(self: \*Ensip15, allocator: std.mem.Allocator, frag: │ │
+│ │ []const u8, decompose: bool) ![]u8; │ │
+│ │ }; │ │
+│ │ │ │
+│ │ // Convenience functions using thread-local singleton │ │
+│ │ pub fn normalize(allocator: std.mem.Allocator, name: []const u8) ![]u8; │ │
+│ │ pub fn beautify(allocator: std.mem.Allocator, name: []const u8) ![]u8; │ │
+│ │ │ │
+│ │ // Error types │ │
+│ │ pub const Error = error{ │ │
+│ │ InvalidLabelExtension, │ │
+│ │ IllegalMixture, │ │
+│ │ WholeConfusable, │ │
+│ │ LeadingUnderscore, │ │
+│ │ FencedLeading, │ │
+│ │ FencedAdjacent, │ │
+│ │ FencedTrailing, │ │
+│ │ DisallowedCharacter, │ │
+│ │ EmptyLabel, │ │
+│ │ CMLeading, │ │
+│ │ CMAfterEmoji, │ │
+│ │ NSMDuplicate, │ │
+│ │ NSMExcessive, │ │
+│ │ OutOfMemory, │ │
+│ │ }; │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Phase 1: Foundation & Infrastructure (Parallel) │ │
+│ │ │ │
+│ │ Task 1.1: Core Utilities (Agent 1) │ │
+│ │ │ │
+│ │ Files: src/util/decoder.zig, src/util/runeset.zig │ │
+│ │ │ │
+│ │ - Port util/decoder.go - bit-packed binary decoder (reads from embedded bytes, no │ │
+│ │ allocation) │ │
+│ │ - Port util/runeset.go - sorted rune set with binary search (wraps slices from │ │
+│ │ embedded data) │ │
+│ │ - Stub implementations that @panic("TODO") │ │
+│ │ - Ensure it compiles │ │
+│ │ │ │
+│ │ Task 1.2: Unicode Normalization (Agent 2) │ │
+│ │ │ │
+│ │ Files: src/nf/nf.zig │ │
+│ │ │ │
+│ │ - Port nf/nf.go - NFC/NFD normalization with Hangul support │ │
+│ │ - Copy go-ens-normalize/nf/nf.bin to src/nf/nf.bin │ │
+│ │ - Stub implementation that @panic("TODO") │ │
+│ │ - NFC/NFD methods take allocator parameter for output │ │
+│ │ - Ensure it compiles │ │
+│ │ │ │
+│ │ Task 1.3: Test Data Acquisition (Agent 3) │ │
+│ │ │ │
+│ │ Files: build.zig (modified), tools/copy_test_data.zig │ │
+│ │ │ │
+│ │ - Write Zig script to copy test JSON files from Go repo: │ │
+│ │ - ensip15/tests.json → test-data/ensip15-tests.json │ │
+│ │ - nf/nf-tests.json → test-data/nf-tests.json │ │
+│ │ - Modify build.zig to run this as a build step │ │
+│ │ - Copy spec binary files: │ │
+│ │ - ensip15/spec.bin → src/ensip15/spec.bin │ │
+│ │ - nf/nf.bin → src/nf/nf.bin │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Phase 2: Core ENSIP15 Structure (Sequential, depends on Phase 1) │ │
+│ │ │ │
+│ │ Task 2.1: Data Structures & Errors │ │
+│ │ │ │
+│ │ Files: src/ensip15/types.zig, src/ensip15/errors.zig │ │
+│ │ │ │
+│ │ - Port all struct definitions from ensip15.go:15-36 │ │
+│ │ - Port error types from errors.go │ │
+│ │ - Port emoji types from emojis.go │ │
+│ │ - Port group types from groups.go │ │
+│ │ - All structs hold slices/pointers to embedded data (no allocations in init) │ │
+│ │ - All with stub/unreachable implementations │ │
+│ │ │ │
+│ │ Task 2.2: Main ENSIP15 Interface │ │
+│ │ │ │
+│ │ Files: src/ensip15/ensip15.zig │ │
+│ │ │ │
+│ │ - Port New() function as init() - no allocator param, just loads embedded data │ │
+│ │ - Port Normalize() function with allocator param (stub with unreachable) │ │
+│ │ - Port Beautify() function with allocator param (stub with unreachable) │ │
+│ │ - Port NormalizeFragment() function with allocator param (stub with unreachable) │ │
+│ │ - Ensure it compiles │ │
+│ │ │ │
+│ │ Task 2.3: Public Root Module │ │
+│ │ │ │
+│ │ Files: src/root.zig │ │
+│ │ │ │
+│ │ - Expose public interface │ │
+│ │ - Implement thread-local singleton pattern (like shared.go) │ │
+│ │ - Export error types │ │
+│ │ - Ensure entire project builds with zig build │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Phase 3: Test Infrastructure (Parallel, depends on Phase 1.3) │ │
+│ │ │ │
+│ │ Task 3.1: JSON Test Parser (Agent 1) │ │
+│ │ │ │
+│ │ Files: tests/json_parser.zig │ │
+│ │ │ │
+│ │ - Write Zig code to parse tests.json format: │ │
+│ │ {"name": "abc", "norm": "abc", "error": false, "comment": "..."} │ │
+│ │ - Use std.json to parse test cases (takes allocator) │ │
+│ │ - Return test case struct array │ │
+│ │ │ │
+│ │ Task 3.2: ENSIP15 Tests (Agent 2) │ │
+│ │ │ │
+│ │ Files: tests/ensip15_test.zig │ │
+│ │ │ │
+│ │ - Port ensip15_test.go:23-53 │ │
+│ │ - Read test-data/ensip15-tests.json │ │
+│ │ - Generate test cases that call normalize(allocator, ...) │ │
+│ │ - Use std.testing.allocator │ │
+│ │ - Assert on expected outcomes │ │
+│ │ - All tests should FAIL (unimplemented) │ │
+│ │ │ │
+│ │ Task 3.3: NF Tests (Agent 3) │ │
+│ │ │ │
+│ │ Files: tests/nf_test.zig │ │
+│ │ │ │
+│ │ - Port nf_test.go:23-52 │ │
+│ │ - Read test-data/nf-tests.json │ │
+│ │ - Test NFC/NFD transformations with allocator │ │
+│ │ - Use std.testing.allocator │ │
+│ │ - All tests should FAIL (unimplemented) │ │
+│ │ │ │
+│ │ Task 3.4: Build Integration (Agent 4) │ │
+│ │ │ │
+│ │ Files: build.zig (modified) │ │
+│ │ │ │
+│ │ - Add test steps for ENSIP15 tests │ │
+│ │ - Add test steps for NF tests │ │
+│ │ - Hook up JSON test data as dependencies │ │
+│ │ - Add comptime embedding of binary files (@embedFile) │ │
+│ │ - Ensure zig build test runs all tests │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Phase 4: Validation & Documentation │ │
+│ │ │ │
+│ │ Task 4.1: Build Verification │ │
+│ │ │ │
+│ │ - Run zig build - should succeed │ │
+│ │ - Run zig build test - all tests should FAIL with clear unreachable/panic messages │ │
+│ │ - Verify binary data files are embedded │ │
+│ │ │ │
+│ │ Task 4.2: Helper Utilities │ │
+│ │ │ │
+│ │ Files: src/ensip15/utils.zig │ │
+│ │ │ │
+│ │ - Port Split(), Join() functions (allocator param where needed) │ │
+│ │ - Port SafeCodepoint() (allocator param) │ │
+│ │ - Port hex formatting utilities (allocator param) │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Success Criteria │ │
+│ │ │ │
+│ │ ✅ zig build completes successfully✅ Full public Zig API defined with explicit │ │
+│ │ allocator parameters✅ No allocator stored in Ensip15 struct✅ All error types │ │
+│ │ defined✅ Test infrastructure set up in build.zig✅ Test data copied from Go │ │
+│ │ reference✅ JSON test parser implemented✅ ENSIP15 test suite runs (all fail with │ │
+│ │ unimplemented panics)✅ NF test suite runs (all fail with unimplemented panics)✅ │ │
+│ │ Binary spec files embedded in code✅ Clear TODO markers in all stub implementations │ │
+│ │ │ │
+│ │ --- │ │
+│ │ Parallel Execution Strategy │ │
+│ │ │ │
+│ │ Agents can work simultaneously on: │ │
+│ │ - Phase 1: All three tasks (1.1, 1.2, 1.3) in parallel │ │
+│ │ - Phase 3: All four tasks (3.1, 3.2, 3.3, 3.4) in parallel after Phase 1.3 completes │ │
+│ │ │ │
+│ │ Sequential dependencies: │ │
+│ │ - Phase 2 depends on Phase 1.1 and 1.2 │ │
+│ │ - Phase 3 depends on Phase 1.3 and Phase 2.3 (for public API) │ │
+│ │ - Phase 4 depends on all previous phases
