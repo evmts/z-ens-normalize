@@ -550,47 +550,14 @@ pub const Ensip15 = struct {
 };
 
 // ============================================================
-// Utility Functions (stubs for Task 12)
+// Utility Functions (imported from utils.zig)
 // ============================================================
-
-/// Split name by dots into labels
-/// Note: Stubbed for Task 12
-fn split(allocator: Allocator, name: []const u8) ![][]const u8 {
-    _ = allocator;
-    _ = name;
-    @panic("TODO: implement split() in Task 12");
-}
-
-/// Join labels with dots
-/// Note: Stubbed for Task 12
-fn join(allocator: Allocator, labels: [][]const u8) ![]u8 {
-    _ = allocator;
-    _ = labels;
-    @panic("TODO: implement join() in Task 12");
-}
-
-/// Flatten tokens into codepoint slice
-/// Note: Stubbed for Task 12
-fn flattenTokens(allocator: Allocator, tokens: []const OutputToken) ![]u21 {
-    _ = allocator;
-    _ = tokens;
-    @panic("TODO: implement flattenTokens() in Task 12");
-}
-
-/// Check if all codepoints are ASCII
-/// Note: Stubbed for Task 12
-fn isASCII(cps: []const u21) bool {
-    _ = cps;
-    @panic("TODO: implement isASCII() in Task 12");
-}
-
-/// Get unique codepoints preserving order
-/// Note: Stubbed for Task 12
-fn uniqueRunes(allocator: Allocator, cps: []const u21) ![]u21 {
-    _ = allocator;
-    _ = cps;
-    @panic("TODO: implement uniqueRunes() in Task 12");
-}
+// The following utility functions are provided by utils module:
+// - utils.split() - Split name by dots into labels
+// - utils.join() - Join labels with dots
+// - utils.flattenTokens() - Flatten tokens into codepoint slice
+// - utils.isAscii() - Check if all codepoints are ASCII
+// - utils.uniqueRunes() - Get unique codepoints preserving order
 
 // ============================================================
 // Tests
