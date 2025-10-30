@@ -373,3 +373,86 @@ test "ENSIP15 init and deinit" {
     defer ensip15.deinit();
     // Verify basic initialization works
 }
+
+// ============================================================
+// Confusable Detection Tests
+// ============================================================
+
+test "confusable detection - Latin vs Cyrillic" {
+    const allocator = testing.allocator;
+    var ensip15 = try Ensip15.init(allocator);
+    defer ensip15.deinit();
+
+    // Cyrillic "а" (U+0430) looks like Latin "a" (U+0061)
+    // A name with all Cyrillic confusables should be rejected
+    // Example: scope (Latin) vs scope with Cyrillic 'о' (U+043E)
+    const cyrillic_confusable = "sсоре"; // Has Cyrillic с (U+0441) and о (U+043E)
+
+    const result = ensip15.normalize(allocator, cyrillic_confusable);
+
+    // Should fail with confusable error
+    try testing.expectError(error.WholeConfusable, result);
+}
+
+test "confusable detection - Mixed scripts with unique character" {
+    const allocator = testing.allocator;
+    var ensip15 = try Ensip15.init(allocator);
+    defer ensip15.deinit();
+
+    // If a name contains a unique non-confusable character,
+    // it should pass even if other characters are confusable
+    // Example: "aб" - Latin 'a' + Cyrillic 'б' (U+0431)
+    // The Cyrillic 'б' is unique and breaks confusability
+    const mixed_unique = "aб";
+
+    const result = ensip15.normalize(allocator, mixed_unique);
+
+    // This might succeed or fail depending on mixing rules
+    // Just verify it doesn't crash
+    if (result) |normalized| {
+        allocator.free(normalized);
+    } else |_| {
+        // Expected to fail on mixing rules, not confusables
+    }
+}
+
+test "confusable detection - Valid same-script homoglyphs" {
+    const allocator = testing.allocator;
+    var ensip15 = try Ensip15.init(allocator);
+    defer ensip15.deinit();
+
+    // Homoglyphs within the same script are allowed
+    // Example: Greek has its own similar characters
+    const greek_name = "αβγ"; // Greek alpha, beta, gamma
+
+    const result = ensip15.normalize(allocator, greek_name);
+
+    // Should succeed
+    if (result) |normalized| {
+        defer allocator.free(normalized);
+        try testing.expect(normalized.len > 0);
+    } else |err| {
+        std.debug.print("Unexpected error for Greek name: {any}\n", .{err});
+        return err;
+    }
+}
+
+test "confusable detection - ASCII only" {
+    const allocator = testing.allocator;
+    var ensip15 = try Ensip15.init(allocator);
+    defer ensip15.deinit();
+
+    // Pure ASCII should never be confusable
+    const ascii_name = "hello";
+
+    const result = ensip15.normalize(allocator, ascii_name);
+
+    // Should succeed
+    if (result) |normalized| {
+        defer allocator.free(normalized);
+        try testing.expectEqualStrings("hello", normalized);
+    } else |err| {
+        std.debug.print("Unexpected error for ASCII name: {any}\n", .{err});
+        return err;
+    }
+}
