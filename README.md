@@ -1,0 +1,373 @@
+# z-ens-normalize
+
+> Zero-dependency Zig implementation of [ENSIP-15](https://docs.ens.domains/ensip/15): ENS Name Normalization Standard
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+A complete port of [go-ens-normalize](https://github.com/adraffy/go-ens-normalize) to Zig, providing ENS (Ethereum Name Service) domain name normalization according to ENSIP-15 specification.
+
+## Features
+
+- **Zero Dependencies** - No external packages required
+- **100% ENSIP-15 Compliant** - Passes all official validation tests
+- **Embedded Data** - Compressed specification data built into the binary
+- **Thread-Safe** - Singleton pattern with lazy initialization via `std.once()`
+- **Memory Efficient** - Explicit allocator parameters for full control
+- **Unicode 16.0.0** - Latest Unicode standard support
+
+## Installation
+
+### Using build.zig.zon
+
+Add to your `build.zig.zon`:
+
+```zig
+.{
+    .name = "my-project",
+    .version = "0.1.0",
+    .dependencies = .{
+        .z_ens_normalize = .{
+            .url = "https://github.com/YOUR_USERNAME/z-ens-normalize/archive/refs/tags/v0.1.0.tar.gz",
+            // Use zig fetch to get the correct hash
+            .hash = "...",
+        },
+    },
+}
+```
+
+### In your build.zig
+
+```zig
+const ens = b.dependency("z_ens_normalize", .{
+    .target = target,
+    .optimize = optimize,
+});
+
+exe.root_module.addImport("z_ens_normalize", ens.module("z_ens_normalize"));
+```
+
+## Quick Start
+
+```zig
+const std = @import("std");
+const ens = @import("z_ens_normalize");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Normalize a name
+    const normalized = try ens.normalize(allocator, "Nick.ETH");
+    defer allocator.free(normalized);
+    std.debug.print("Normalized: {s}\n", .{normalized});
+    // Output: "nick.eth"
+
+    // Beautify a name (preserves emoji presentation)
+    const beautified = try ens.beautify(allocator, "🚀RaFFY🚴‍♂️.eTh");
+    defer allocator.free(beautified);
+    std.debug.print("Beautified: {s}\n", .{beautified});
+    // Output: "🚀raffy🚴‍♂️.eth"
+}
+```
+
+## API Reference
+
+### Convenience Functions
+
+These functions use a thread-safe singleton instance initialized lazily on first use:
+
+#### `normalize(allocator: Allocator, name: []const u8) ![]u8`
+
+Normalizes an ENS name according to ENSIP-15 specification.
+
+**Parameters:**
+- `allocator` - Memory allocator for the result
+- `name` - Input name as UTF-8 bytes
+
+**Returns:** Normalized name (caller owns memory, must free)
+
+**Example:**
+```zig
+const result = try ens.normalize(allocator, "VITALIK.eth");
+defer allocator.free(result);
+// result: "vitalik.eth"
+```
+
+#### `beautify(allocator: Allocator, name: []const u8) ![]u8`
+
+Beautifies an ENS name with visual enhancements while maintaining normalization.
+
+**Differences from normalize():**
+- Preserves FE0F variation selectors for emoji presentation
+- Converts lowercase Greek xi (ξ) to uppercase Xi (Ξ) in non-Greek labels
+- More visually appealing for UI display
+
+**Example:**
+```zig
+const result = try ens.beautify(allocator, "🏴‍☠️nick.eth");
+defer allocator.free(result);
+// result: "🏴‍☠️nick.eth" (with proper emoji presentation)
+```
+
+### Instance Methods
+
+For more control, you can use the singleton directly or create your own instance:
+
+#### `shared() *const Ensip15`
+
+Returns the thread-safe singleton instance.
+
+```zig
+const instance = ens.shared();
+const result = try instance.normalize(allocator, "test.eth");
+defer allocator.free(result);
+```
+
+#### `Ensip15.init(allocator: Allocator) !Ensip15`
+
+Creates a new ENSIP15 normalizer instance.
+
+```zig
+var normalizer = try ens.Ensip15.init(allocator);
+defer normalizer.deinit();
+
+const result = try normalizer.normalize(allocator, "test.eth");
+defer allocator.free(result);
+```
+
+### Error Handling
+
+All normalization functions return errors for invalid input:
+
+```zig
+const result = ens.normalize(allocator, "invalid..name") catch |err| switch (err) {
+    error.EmptyLabel => std.debug.print("Label cannot be empty\n", .{}),
+    error.DisallowedCharacter => std.debug.print("Contains disallowed character\n", .{}),
+    error.IllegalMixture => std.debug.print("Illegal script mixture\n", .{}),
+    error.WholeConfusable => std.debug.print("Confusable with another name\n", .{}),
+    else => return err,
+};
+```
+
+### Error Types
+
+The library defines the following error types:
+
+- `InvalidLabelExtension` - Label has `--` at positions 2-3 (e.g., "ab--test")
+- `IllegalMixture` - Mixed scripts not allowed together
+- `WholeConfusable` - Label looks like a different script
+- `LeadingUnderscore` - Underscore appears after label start
+- `FencedLeading` - Zero-width joiner at label start
+- `FencedAdjacent` - Adjacent zero-width characters
+- `FencedTrailing` - Zero-width joiner at label end
+- `DisallowedCharacter` - Character not allowed in ENS names
+- `EmptyLabel` - Zero-length label
+- `CMLeading` - Combining mark at label start
+- `CMAfterEmoji` - Combining mark after emoji
+- `NSMDuplicate` - Duplicate non-spacing marks
+- `NSMExcessive` - Too many non-spacing marks
+- `OutOfMemory` - Allocation failure
+- `InvalidUtf8` - Invalid UTF-8 encoding
+
+## Unicode Normalization
+
+The library also exposes Unicode normalization functions:
+
+```zig
+const nf = ens.NF.init();
+
+// NFC (Canonical Composition)
+const composed = try nf.nfc(allocator, &[_]u21{ 0x61, 0x300 }); // "à"
+defer allocator.free(composed);
+
+// NFD (Canonical Decomposition)
+const decomposed = try nf.nfd(allocator, &[_]u21{ 0xE0 }); // "a" + "̀"
+defer allocator.free(decomposed);
+```
+
+## Testing
+
+The library includes comprehensive test suites:
+
+### Run All Tests
+
+```bash
+zig build test
+```
+
+### Test Categories
+
+1. **ENSIP-15 Validation Tests** (`tests/ensip15_test.zig`)
+   - 100% pass rate on official ENSIP-15 test suite
+   - Tests normalization, beautification, and error cases
+
+2. **Unicode Normalization Tests** (`tests/nf_test.zig`)
+   - 100% pass rate on Unicode normalization test cases
+   - Tests NFC, NFD, and Hangul composition
+
+3. **Initialization Tests** (`tests/init_test.zig`)
+   - Tests data loading from embedded binary
+   - Validates spec.bin and nf.bin decompression
+
+### Test Data
+
+Test data is automatically copied from the reference implementation:
+
+```bash
+zig build copy-test-data
+```
+
+This downloads:
+- `ensip15-tests.json` - ENSIP-15 validation test cases
+- `nf-tests.json` - Unicode normalization test cases
+
+## Build Process
+
+### Standard Build
+
+```bash
+# Build library
+zig build
+
+# Run tests
+zig build test
+
+# Build with optimizations
+zig build -Doptimize=ReleaseFast
+```
+
+### Cross-Compilation
+
+```bash
+# Build for specific target
+zig build -Dtarget=x86_64-linux
+
+# Build static library for all targets
+zig build --summary all
+```
+
+### Development Workflow
+
+1. **Sync with reference implementation:**
+   ```bash
+   # Update test data from go-ens-normalize
+   zig build copy-test-data
+   ```
+
+2. **Run tests:**
+   ```bash
+   zig build test
+   ```
+
+3. **Build library:**
+   ```bash
+   zig build
+   # Output: zig-out/lib/libz_ens_normalize.a
+   ```
+
+## Architecture
+
+### Directory Structure
+
+```
+z-ens-normalize/
+├── src/
+│   ├── root.zig              # Public API & singleton
+│   ├── ensip15/
+│   │   ├── ensip15.zig       # Main normalization logic
+│   │   ├── init.zig          # Data initialization
+│   │   ├── types.zig         # Core data structures
+│   │   ├── errors.zig        # Error definitions
+│   │   ├── utils.zig         # Helper utilities
+│   │   └── spec.bin          # Embedded ENSIP-15 data
+│   ├── nf/
+│   │   ├── nf.zig            # Unicode normalization
+│   │   └── nf.bin            # Embedded normalization data
+│   └── util/
+│       ├── decoder.zig       # Binary data decoder
+│       └── runeset.zig       # Efficient rune set
+├── tests/
+│   ├── ensip15_test.zig      # ENSIP-15 validation tests
+│   ├── nf_test.zig           # Unicode normalization tests
+│   └── init_test.zig         # Initialization tests
+├── test-data/
+│   ├── ensip15-tests.json    # ENSIP-15 test cases
+│   └── nf-tests.json         # NF test cases
+├── build.zig                 # Build configuration
+└── README.md                 # This file
+```
+
+### Memory Management
+
+The library follows Zig best practices for memory management:
+
+- **Explicit Allocators** - All allocation-requiring functions take `Allocator` parameter
+- **Caller Owns Memory** - Functions return owned slices that must be freed
+- **No Hidden Allocations** - No global allocator usage
+- **Zero-Copy Initialization** - Embedded data is referenced, not copied
+
+Example memory pattern:
+```zig
+// Caller provides allocator and owns result
+const result = try ens.normalize(allocator, "test.eth");
+defer allocator.free(result); // Caller frees memory
+
+// Internal operations use the provided allocator
+// No global state or hidden allocations
+```
+
+## Performance
+
+The library is designed for efficiency:
+
+- **Compressed Data** - Spec data is bit-packed and compressed
+- **Embedded Binary** - No file I/O at runtime
+- **Lazy Initialization** - Singleton initialized only when first used
+- **Zero-Copy Where Possible** - References embedded data directly
+
+## Compatibility
+
+- **Zig Version:** 0.13.0 or later
+- **Unicode Version:** 16.0.0
+- **ENSIP-15:** Final specification
+- **Reference Implementation:** [go-ens-normalize](https://github.com/adraffy/go-ens-normalize) v0.1.1
+
+## Contributing
+
+Contributions are welcome! This implementation aims to maintain 100% compatibility with the reference Go implementation.
+
+### Development Guidelines
+
+1. Run tests before submitting PR: `zig build test`
+2. Follow Zig style conventions
+3. Add tests for new functionality
+4. Update documentation as needed
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Credits
+
+- **Reference Implementation:** [adraffy/go-ens-normalize](https://github.com/adraffy/go-ens-normalize)
+- **JavaScript Reference:** [adraffy/ens-normalize.js](https://github.com/adraffy/ens-normalize.js)
+- **ENSIP-15 Specification:** [ENS Improvement Proposals](https://docs.ens.domains/ensip/15)
+- **Zig Port:** William Cory
+
+## Resources
+
+- [ENSIP-15 Specification](https://docs.ens.domains/ensip/15)
+- [ENS Documentation](https://docs.ens.domains/)
+- [Unicode Technical Report #15](https://unicode.org/reports/tr15/) (Normalization Forms)
+- [Unicode Technical Report #46](https://unicode.org/reports/tr46/) (IDNA Compatibility)
+- [Zig Language Reference](https://ziglang.org/documentation/master/)
+
+## Support
+
+- **Issues:** [GitHub Issues](https://github.com/YOUR_USERNAME/z-ens-normalize/issues)
+- **ENS Discord:** [discord.gg/ensdomains](https://discord.gg/ensdomains)
+
+---
+
+Built with [Zig](https://ziglang.org/) 🦎
