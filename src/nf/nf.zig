@@ -9,7 +9,7 @@ const compressed = @embedFile("nf.bin");
 // Packing constants for combining class and codepoint into single value
 // Format: [CC: 8 bits][CP: 24 bits]
 const SHIFT: u5 = 24;
-const MASK: u21 = (1 << SHIFT) - 1;
+const MASK: u32 = (1 << SHIFT) - 1;
 const NONE: i32 = -1;
 
 // Hangul syllable constants for algorithmic decomposition/composition
@@ -174,63 +174,204 @@ pub const NF = struct {
         nf: *const NF,
         buf: std.ArrayList(i32),
         check: bool,
+        allocator: Allocator,
 
         // Add codepoint to buffer, packing with combining class if present
-        fn add(self: *Packer, cp: u21) void {
-            _ = self;
-            _ = cp;
-            unreachable;
+        fn add(self: *Packer, cp: u21) !void {
+            var packed_val: i32 = @bitCast(@as(u32, cp));
+
+            if (self.nf.ranks.get(cp)) |cc| {
+                self.check = true;
+                packed_val = @bitCast(@as(u32, cp) | (@as(u32, cc) << SHIFT));
+            }
+
+            try self.buf.append(self.allocator, packed_val);
         }
 
         // Reorder codepoints by combining class (canonical ordering)
         fn fixOrder(self: *Packer) void {
-            _ = self;
-            unreachable;
+            if (!self.check) return;
+
+            const v = self.buf.items;
+            if (v.len == 0) return;
+
+            var prev = unpackCC(v[0]);
+            var i: usize = 1;
+
+            while (i < v.len) : (i += 1) {
+                const cc = unpackCC(v[i]);
+                if (cc == 0 or prev <= cc) {
+                    prev = cc;
+                    continue;
+                }
+
+                var j = i - 1;
+                while (true) {
+                    // Swap v[j+1] and v[j]
+                    const temp = v[j + 1];
+                    v[j + 1] = v[j];
+                    v[j] = temp;
+
+                    if (j == 0) break;
+                    j -= 1;
+
+                    prev = unpackCC(v[j]);
+                    if (prev <= cc) break;
+                }
+                prev = unpackCC(v[i]);
+            }
         }
     };
 
     // Attempt to compose two codepoints into a single codepoint
     // Handles Hangul algorithmic composition and table-based composition
     fn composePair(self: *const NF, a: u21, b: u21) i32 {
-        _ = self;
-        _ = a;
-        _ = b;
-        unreachable;
+        // Hangul LV composition: L + V -> LV syllable
+        if (a >= L0 and a < L1 and b >= V0 and b < V1) {
+            return @intCast(S0 + (a - L0) * N_COUNT + (b - V0) * T_COUNT);
+        }
+
+        // Hangul LVT composition: LV + T -> LVT syllable
+        if (isHangul(a) and b > T0 and b < T1 and (a - S0) % T_COUNT == 0) {
+            return @intCast(a + (b - T0));
+        }
+
+        // Table-based composition
+        if (self.recomps.get(a)) |recomp_map| {
+            if (recomp_map.get(b)) |cp| {
+                return @intCast(cp);
+            }
+        }
+
+        return NONE;
     }
 
     // Recursively decompose codepoints with Hangul special handling
     // Returns packed values (CP + CC in single i32)
     fn decomposed(self: *const NF, allocator: Allocator, cps: []const u21) ![]i32 {
-        _ = self;
-        _ = allocator;
-        _ = cps;
-        unreachable;
+        var p = Packer{
+            .nf = self,
+            .buf = .{},
+            .check = false,
+            .allocator = allocator,
+        };
+        errdefer p.buf.deinit(allocator);
+
+        var work_buf: std.ArrayList(u21) = .{};
+        defer work_buf.deinit(allocator);
+
+        for (cps) |cp0| {
+            var cp = cp0;
+
+            while (true) {
+                // ASCII fast path
+                if (cp < 0x80) {
+                    try p.buf.append(allocator, @bitCast(@as(u32, cp)));
+                } else if (isHangul(cp)) {
+                    // Hangul algorithmic decomposition
+                    const sIndex = cp - S0;
+                    const lIndex = sIndex / N_COUNT;
+                    const vIndex = (sIndex % N_COUNT) / T_COUNT;
+                    const tIndex = sIndex % T_COUNT;
+
+                    try p.add(L0 + lIndex);
+                    try p.add(V0 + vIndex);
+                    if (tIndex > 0) {
+                        try p.add(T0 + tIndex);
+                    }
+                } else {
+                    // Table lookup for decomposition
+                    if (self.decomps.get(cp)) |decomp| {
+                        try work_buf.appendSlice(allocator, decomp);
+                    } else {
+                        try p.add(cp);
+                    }
+                }
+
+                // Continue with next item from work buffer
+                if (work_buf.items.len == 0) break;
+                cp = work_buf.pop() orelse break;
+            }
+        }
+
+        p.fixOrder();
+        return p.buf.toOwnedSlice(allocator);
     }
 
     // Recompose decomposed+packed codepoints while respecting blocking rules
     fn composedFromPacked(self: *const NF, allocator: Allocator, packed_cps: []const i32) ![]u21 {
-        _ = self;
-        _ = allocator;
-        _ = packed_cps;
-        unreachable;
+        var cps: std.ArrayList(u21) = .{};
+        errdefer cps.deinit(allocator);
+
+        var stack: std.ArrayList(u21) = .{};
+        defer stack.deinit(allocator);
+
+        var prevCp: i32 = NONE;
+        var prevCc: u8 = 0;
+
+        for (packed_cps) |p| {
+            const cc = unpackCC(p);
+            const cp = unpackCP(p);
+
+            if (prevCp == NONE) {
+                if (cc == 0) {
+                    prevCp = @intCast(cp);
+                } else {
+                    try cps.append(allocator, cp);
+                }
+            } else if (prevCc > 0 and prevCc >= cc) {
+                if (cc == 0) {
+                    try cps.append(allocator, @intCast(prevCp));
+                    try cps.appendSlice(allocator, stack.items);
+                    stack.clearRetainingCapacity();
+                    prevCp = @intCast(cp);
+                } else {
+                    try stack.append(allocator, cp);
+                }
+                prevCc = cc;
+            } else {
+                const composed = self.composePair(@intCast(prevCp), cp);
+                if (composed != NONE) {
+                    prevCp = composed;
+                } else if (prevCc == 0 and cc == 0) {
+                    try cps.append(allocator, @intCast(prevCp));
+                    prevCp = @intCast(cp);
+                } else {
+                    try stack.append(allocator, cp);
+                    prevCc = cc;
+                }
+            }
+        }
+
+        if (prevCp != NONE) {
+            try cps.append(allocator, @intCast(prevCp));
+            try cps.appendSlice(allocator, stack.items);
+        }
+
+        return cps.toOwnedSlice(allocator);
     }
 
     // Public method: NFD (Canonical Decomposition)
     // Decomposes all characters to their canonical decomposed form
     pub fn nfd(self: *const NF, allocator: Allocator, cps: []const u21) ![]u21 {
-        _ = self;
-        _ = allocator;
-        _ = cps;
-        unreachable;
+        const packed_vals = try self.decomposed(allocator, cps);
+        defer allocator.free(packed_vals);
+
+        const result = try allocator.alloc(u21, packed_vals.len);
+        for (packed_vals, 0..) |p, i| {
+            result[i] = unpackCP(p);
+        }
+
+        return result;
     }
 
     // Public method: NFC (Canonical Composition)
     // Decomposes then recomposes where possible
     pub fn nfc(self: *const NF, allocator: Allocator, cps: []const u21) ![]u21 {
-        _ = self;
-        _ = allocator;
-        _ = cps;
-        unreachable;
+        const packed_vals = try self.decomposed(allocator, cps);
+        defer allocator.free(packed_vals);
+
+        return self.composedFromPacked(allocator, packed_vals);
     }
 
     // Cleanup method: Free all allocated memory
