@@ -25,6 +25,9 @@ const Whole = types.Whole;
 const errors = @import("errors.zig");
 const Error = errors.Error;
 
+const RuneSet = @import("../util/runeset.zig").RuneSet;
+const utils = @import("utils.zig");
+
 // ============================================================
 // Main ENSIP15 Structure
 // ============================================================
@@ -35,29 +38,41 @@ pub const Ensip15 = struct {
     allocator: Allocator,
 
     // Placeholder fields - these would be populated by Task 11 (ensip15-init)
-    // For now, we just define the structure
-    
-    // Note: In full implementation, these would be:
-    // - nf: NF normalization context
-    // - shouldEscape: RuneSet
-    // - ignored: RuneSet
-    // - combiningMarks: RuneSet
-    // - nonSpacingMarks: RuneSet
-    // - maxNonSpacingMarks: usize
-    // - nfcCheck: RuneSet
-    // - fenced: HashMap(u21, []const u8)
-    // - mapped: HashMap(u21, []const u21)
-    // - groups: []Group
-    // - emojis: []EmojiSequence
-    // - emojiRoot: *EmojiNode
-    // - possiblyValid: RuneSet
-    // - wholes: []Whole
-    // - confusables: HashMap(u21, Whole)
-    // - uniqueNonConfusables: RuneSet
-    // - _ASCII: *const Group
-    // - _EMOJI: *const Group
-    // - _LATIN: *const Group
-    // - _GREEK: *const Group
+    // For now, we just define the structure with fields needed for validation
+
+    // Normalization context
+    nf: ?*const @import("../nf/nf.zig").NF = null,
+
+    // Character sets
+    should_escape: RuneSet = undefined,
+    ignored: RuneSet = undefined,
+    combining_marks: RuneSet = undefined,
+    non_spacing_marks: RuneSet = undefined,
+    max_non_spacing_marks: usize = 4, // Default max NSM count
+    nfc_check: RuneSet = undefined,
+
+    // Character mappings
+    fenced: std.AutoHashMap(u21, []const u8) = undefined,
+    mapped: std.AutoHashMap(u21, []const u21) = undefined,
+
+    // Script groups
+    groups: []Group = &[_]Group{},
+
+    // Emoji sequences
+    emojis: []EmojiSequence = &[_]EmojiSequence{},
+    emoji_root: ?*EmojiNode = null,
+
+    // Confusable detection
+    possibly_valid: RuneSet = undefined,
+    wholes: []Whole = &[_]Whole{},
+    confusables: std.AutoHashMap(u21, Whole) = undefined,
+    unique_non_confusables: RuneSet = undefined,
+
+    // Common group references
+    _ASCII: ?*const Group = null,
+    _EMOJI: ?*const Group = null,
+    _LATIN: ?*const Group = null,
+    _GREEK: ?*const Group = null,
 
     /// Initialize ENSIP15 normalization context
     /// Note: Stubbed for Task 11
@@ -229,8 +244,19 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     fn checkLeadingUnderscore(cps: []const u21) !void {
-        _ = cps;
-        @panic("TODO: implement checkLeadingUnderscore()");
+        const UNDERSCORE: u21 = 0x5F;
+        var allowed = true;
+        for (cps) |cp| {
+            if (allowed) {
+                if (cp != UNDERSCORE) {
+                    allowed = false;
+                }
+            } else {
+                if (cp == UNDERSCORE) {
+                    return Error.LeadingUnderscore;
+                }
+            }
+        }
     }
 
     /// Check label extension format
@@ -254,8 +280,10 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     fn checkLabelExtension(cps: []const u21) !void {
-        _ = cps;
-        @panic("TODO: implement checkLabelExtension()");
+        const HYPHEN: u21 = 0x2D;
+        if (cps.len >= 4 and cps[2] == HYPHEN and cps[3] == HYPHEN) {
+            return Error.InvalidLabelExtension;
+        }
     }
 
     // ============================================================
@@ -280,9 +308,18 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     fn checkCombiningMarks(self: *const Ensip15, tokens: []const OutputToken) !void {
-        _ = self;
-        _ = tokens;
-        @panic("TODO: implement checkCombiningMarks()");
+        for (tokens, 0..) |token, i| {
+            if (token.emoji == null and token.codepoints.len > 0) {
+                const cp = token.codepoints[0];
+                if (self.combining_marks.contains(cp)) {
+                    if (i == 0) {
+                        return Error.CMLeading;
+                    } else if (tokens[i - 1].emoji != null) {
+                        return Error.CMAfterEmoji;
+                    }
+                }
+            }
+        }
     }
 
     /// Check fenced character placement (ZWJ/ZWNJ)
@@ -307,9 +344,26 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     fn checkFenced(self: *const Ensip15, cps: []const u21) !void {
-        _ = self;
-        _ = cps;
-        @panic("TODO: implement checkFenced()");
+        if (cps.len == 0) return;
+
+        // Check first character
+        if (self.fenced.get(cps[0])) |_| {
+            return Error.FencedLeading;
+        }
+
+        var last_pos: i32 = -1;
+        for (cps[1..], 1..) |cp, i| {
+            if (self.fenced.get(cp)) |_| {
+                if (last_pos == @as(i32, @intCast(i))) {
+                    return Error.FencedAdjacent;
+                }
+                last_pos = @intCast(i + 1);
+            }
+        }
+
+        if (last_pos == @as(i32, @intCast(cps.len))) {
+            return Error.FencedTrailing;
+        }
     }
 
     /// Orchestrate all label validation checks
@@ -361,10 +415,34 @@ pub const Ensip15 = struct {
 
     /// Determine which script group a set of codepoints belongs to
     /// Note: Stubbed for future implementation
-    fn determineGroup(self: *const Ensip15, unique: []const u21) !*const Group {
-        _ = self;
-        _ = unique;
-        @panic("TODO: implement determineGroup()");
+    fn determineGroup(self: *const Ensip15, unique: []const u21, allocator: Allocator) !*const Group {
+        // Clone groups array
+        var gs = try allocator.alloc(*const Group, self.groups.len);
+        defer allocator.free(gs);
+
+        for (self.groups, 0..) |*g, i| {
+            gs[i] = g;
+        }
+
+        var prev = gs.len;
+        for (unique) |cp| {
+            var next: usize = 0;
+            for (0..prev) |i| {
+                if (gs[i].contains(cp)) {
+                    gs[next] = gs[i];
+                    next += 1;
+                }
+            }
+
+            if (next == 0) {
+                return Error.DisallowedCharacter;
+            }
+
+            prev = next;
+            if (prev == 1) break;
+        }
+
+        return gs[0];
     }
 
     /// Check group-specific validation rules
