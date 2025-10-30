@@ -88,7 +88,7 @@ pub const Decoder = struct {
         defer allocator.free(v);
 
         // Convert codepoints to UTF-8
-        var result: std.ArrayList(u8) = .empty;
+        var result: std.ArrayListUnmanaged(u8) = .{};
         errdefer result.deinit(allocator);
 
         for (v) |cp| {
@@ -150,7 +150,7 @@ pub const Decoder = struct {
     /// Read the magic number table from the stream header.
     /// This is called during initialization.
     fn readMagic(self: *Decoder, allocator: Allocator) ![]i32 {
-        var list: std.ArrayList(i32) = .empty;
+        var list: std.ArrayListUnmanaged(i32) = .{};
         errdefer list.deinit(allocator);
 
         var w: i32 = 0;

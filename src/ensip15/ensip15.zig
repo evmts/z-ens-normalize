@@ -232,15 +232,15 @@ pub const Ensip15 = struct {
             }
         }
 
-        const possibly_valid = try RuneSet.fromInts(allocator, blk: {
-            var list: std.ArrayList(i32) = .{};
+        const possibly_valid = blk: {
+            var list: std.ArrayListUnmanaged(u21) = .{};
             var pv_iter = possibly_valid_map.keyIterator();
             while (pv_iter.next()) |cp_ptr| {
-                try list.append(allocator, @intCast(cp_ptr.*));
+                try list.append(allocator, cp_ptr.*);
             }
-            std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
-            break :blk try list.toOwnedSlice(allocator);
-        });
+            std.mem.sort(u21, list.items, {}, comptime std.sort.asc(u21));
+            break :blk RuneSet{ .runes = try list.toOwnedSlice(allocator) };
+        };
         errdefer possibly_valid.deinit(allocator);
 
         // Build unique_non_confusables
@@ -253,15 +253,15 @@ pub const Ensip15 = struct {
             _ = union_map.remove(cp_ptr.*);
         }
 
-        const unique_non_confusables = try RuneSet.fromInts(allocator, blk: {
-            var list: std.ArrayList(i32) = .{};
+        const unique_non_confusables = blk: {
+            var list: std.ArrayListUnmanaged(u21) = .{};
             var u_iter = union_map.keyIterator();
             while (u_iter.next()) |cp_ptr| {
-                try list.append(allocator, @intCast(cp_ptr.*));
+                try list.append(allocator, cp_ptr.*);
             }
-            std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
-            break :blk try list.toOwnedSlice(allocator);
-        });
+            std.mem.sort(u21, list.items, {}, comptime std.sort.asc(u21));
+            break :blk RuneSet{ .runes = try list.toOwnedSlice(allocator) };
+        };
         errdefer unique_non_confusables.deinit(allocator);
 
         // Find groups
@@ -504,7 +504,7 @@ pub const Ensip15 = struct {
         defer allocator.free(labels);
 
         // Process each label
-        var normalized_labels: std.ArrayList([]u8) = .{};
+        var normalized_labels: std.ArrayListUnmanaged([]u8) = .{};
         defer {
             for (normalized_labels.items) |label| allocator.free(label);
             normalized_labels.deinit(allocator);
@@ -564,7 +564,7 @@ pub const Ensip15 = struct {
         nf_fn: *const fn (*const NF, Allocator, []const u21) anyerror![]u21,
         ef_fn: *const fn (*const EmojiSequence) []const u21,
     ) ![]OutputToken {
-        var tokens: std.ArrayList(OutputToken) = .{};
+        var tokens: std.ArrayListUnmanaged(OutputToken) = .{};
         errdefer {
             for (tokens.items) |token| {
                 allocator.free(token.codepoints);
@@ -572,7 +572,7 @@ pub const Ensip15 = struct {
             tokens.deinit(allocator);
         }
 
-        var buf: std.ArrayList(u21) = .{};
+        var buf: std.ArrayListUnmanaged(u21) = .{};
         defer buf.deinit(allocator);
 
         var i: usize = 0;
@@ -852,7 +852,7 @@ pub const Ensip15 = struct {
         }
 
         // Extract non-emoji chars
-        var chars: std.ArrayList(u21) = .{};
+        var chars: std.ArrayListUnmanaged(u21) = .{};
         defer chars.deinit(allocator);
 
         for (tokens) |token| {
@@ -975,7 +975,7 @@ pub const Ensip15 = struct {
 
     /// Convert UTF-8 string to UTF-32 codepoint array
     fn utf8ToUtf32(allocator: Allocator, utf8: []const u8) ![]u21 {
-        var result: std.ArrayList(u21) = .{};
+        var result: std.ArrayListUnmanaged(u21) = .{};
         errdefer result.deinit(allocator);
 
         var i: usize = 0;
@@ -990,7 +990,7 @@ pub const Ensip15 = struct {
 
     /// Convert UTF-32 codepoint array to UTF-8 string
     fn utf32ToUtf8(allocator: Allocator, utf32: []const u21) ![]u8 {
-        var result: std.ArrayList(u8) = .{};
+        var result: std.ArrayListUnmanaged(u8) = .{};
         errdefer result.deinit(allocator);
 
         for (utf32) |cp| {

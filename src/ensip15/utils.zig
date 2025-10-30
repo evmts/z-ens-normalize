@@ -82,7 +82,7 @@ pub fn toHexSequence(allocator: Allocator, cps: []const u21) ![]u8 {
         return try allocator.alloc(u8, 0);
     }
 
-    var list: std.ArrayList(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .{};
     defer list.deinit(allocator);
 
     for (cps, 0..) |cp, i| {
@@ -98,7 +98,7 @@ pub fn toHexSequence(allocator: Allocator, cps: []const u21) ![]u8 {
 /// Format single codepoint safely for display
 /// Returns: "char" {HEX} or {HEX} depending on shouldEscape
 pub fn safeCodepoint(self: *const Ensip15, allocator: Allocator, cp: u21) ![]u8 {
-    var list: std.ArrayList(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .{};
     defer list.deinit(allocator);
 
     if (!self.should_escape.contains(cp)) {
@@ -115,7 +115,7 @@ pub fn safeCodepoint(self: *const Ensip15, allocator: Allocator, cp: u21) ![]u8 
 /// Format codepoint array safely for display
 /// Handles combining marks, escaping, and bidi reset
 pub fn safeImplode(self: *const Ensip15, allocator: Allocator, cps: []const u21) ![]u8 {
-    var list: std.ArrayList(u8) = .{};
+    var list: std.ArrayListUnmanaged(u8) = .{};
     defer list.deinit(allocator);
 
     try safeImplodeInternal(self, allocator, &list, cps);
@@ -124,7 +124,7 @@ pub fn safeImplode(self: *const Ensip15, allocator: Allocator, cps: []const u21)
 }
 
 /// Internal helper for safeImplode that writes to ArrayList
-fn safeImplodeInternal(self: *const Ensip15, allocator: Allocator, list: *std.ArrayList(u8), cps: []const u21) !void {
+fn safeImplodeInternal(self: *const Ensip15, allocator: Allocator, list: *std.ArrayListUnmanaged(u8), cps: []const u21) !void {
     if (cps.len == 0) {
         return;
     }
@@ -164,7 +164,7 @@ pub fn uniqueRunes(allocator: Allocator, cps: []const u21) ![]u21 {
     var set = std.AutoHashMap(u21, void).init(allocator);
     defer set.deinit();
 
-    var result: std.ArrayList(u21) = .{};
+    var result: std.ArrayListUnmanaged(u21) = .{};
     defer result.deinit(allocator);
 
     for (cps) |cp| {
@@ -225,20 +225,21 @@ pub fn flattenTokens(allocator: Allocator, tokens: []const OutputToken) ![]u21 {
 // === Internal Helpers ===
 
 /// Helper: append single codepoint as hex to ArrayList (minimum 2 digits, uppercase)
-fn appendHex(allocator: Allocator, list: *std.ArrayList(u8), cp: u21) !void {
+fn appendHex(allocator: Allocator, list: *std.ArrayListUnmanaged(u8), cp: u21) !void {
     // Format as uppercase hex with minimum 2 digits
-    try std.fmt.format(list.writer(allocator), "{X:0>2}", .{cp});
+    const writer = list.writer(allocator);
+    try std.fmt.format(writer, "{X:0>2}", .{cp});
 }
 
 /// Helper: append codepoint in {HEX} format to ArrayList
-fn appendHexEscape(allocator: Allocator, list: *std.ArrayList(u8), cp: u21) !void {
+fn appendHexEscape(allocator: Allocator, list: *std.ArrayListUnmanaged(u8), cp: u21) !void {
     try list.append(allocator, '{');
     try appendHex(allocator, list, cp);
     try list.append(allocator, '}');
 }
 
 /// Helper: append a Unicode codepoint to ArrayList as UTF-8
-fn appendCodepoint(allocator: Allocator, list: *std.ArrayList(u8), cp: u21) !void {
+fn appendCodepoint(allocator: Allocator, list: *std.ArrayListUnmanaged(u8), cp: u21) !void {
     var buf: [4]u8 = undefined;
     const len = std.unicode.utf8Encode(cp, &buf) catch {
         // If encoding fails, use replacement character

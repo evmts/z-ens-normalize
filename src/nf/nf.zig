@@ -172,12 +172,11 @@ pub const NF = struct {
     // Packer struct: Accumulates decomposed codepoints with combining classes
     const Packer = struct {
         nf: *const NF,
-        buf: std.ArrayList(i32),
+        buf: std.ArrayListUnmanaged(i32),
         check: bool,
-        allocator: Allocator,
 
         // Add codepoint to buffer, packing with combining class if present
-        fn add(self: *Packer, cp: u21) !void {
+        fn add(self: *Packer, allocator: Allocator, cp: u21) !void {
             var packed_val: i32 = @bitCast(@as(u32, cp));
 
             if (self.nf.ranks.get(cp)) |cc| {
@@ -185,7 +184,7 @@ pub const NF = struct {
                 packed_val = @bitCast(@as(u32, cp) | (@as(u32, cc) << SHIFT));
             }
 
-            try self.buf.append(self.allocator, packed_val);
+            try self.buf.append(allocator, packed_val);
         }
 
         // Reorder codepoints by combining class (canonical ordering)
@@ -253,11 +252,10 @@ pub const NF = struct {
             .nf = self,
             .buf = .{},
             .check = false,
-            .allocator = allocator,
         };
         errdefer p.buf.deinit(allocator);
 
-        var work_buf: std.ArrayList(u21) = .{};
+        var work_buf: std.ArrayListUnmanaged(u21) = .{};
         defer work_buf.deinit(allocator);
 
         for (cps) |cp0| {
@@ -274,17 +272,17 @@ pub const NF = struct {
                     const vIndex = (sIndex % N_COUNT) / T_COUNT;
                     const tIndex = sIndex % T_COUNT;
 
-                    try p.add(L0 + lIndex);
-                    try p.add(V0 + vIndex);
+                    try p.add(allocator, L0 + lIndex);
+                    try p.add(allocator, V0 + vIndex);
                     if (tIndex > 0) {
-                        try p.add(T0 + tIndex);
+                        try p.add(allocator, T0 + tIndex);
                     }
                 } else {
                     // Table lookup for decomposition
                     if (self.decomps.get(cp)) |decomp| {
                         try work_buf.appendSlice(allocator, decomp);
                     } else {
-                        try p.add(cp);
+                        try p.add(allocator, cp);
                     }
                 }
 
@@ -300,10 +298,10 @@ pub const NF = struct {
 
     // Recompose decomposed+packed codepoints while respecting blocking rules
     fn composedFromPacked(self: *const NF, allocator: Allocator, packed_cps: []const i32) ![]u21 {
-        var cps: std.ArrayList(u21) = .{};
+        var cps: std.ArrayListUnmanaged(u21) = .{};
         errdefer cps.deinit(allocator);
 
-        var stack: std.ArrayList(u21) = .{};
+        var stack: std.ArrayListUnmanaged(u21) = .{};
         defer stack.deinit(allocator);
 
         var prevCp: i32 = NONE;

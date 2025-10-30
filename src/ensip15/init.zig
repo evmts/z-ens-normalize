@@ -140,7 +140,7 @@ pub fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u2
 pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
     const RuneSet = @import("../util/runeset.zig").RuneSet;
 
-    var groups: std.ArrayList(Group) = .{};
+    var groups: std.ArrayListUnmanaged(Group) = .{};
     errdefer {
         for (groups.items) |group| {
             allocator.free(group.name);
@@ -204,7 +204,7 @@ pub fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
 fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const u21) ![]EmojiSequence {
     const FE0F: u21 = 0xFE0F;
 
-    var result: std.ArrayList(EmojiSequence) = .{};
+    var result: std.ArrayListUnmanaged(EmojiSequence) = .{};
     errdefer {
         for (result.items) |emoji| {
             allocator.free(emoji.normalized);
@@ -227,7 +227,7 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
         beautified[prev.len] = @intCast(cp);
 
         // Build normalized: beautified with FE0F stripped
-        var normalized_list: std.ArrayList(u21) = .{};
+        var normalized_list: std.ArrayListUnmanaged(u21) = .{};
         defer normalized_list.deinit(allocator);
 
         for (beautified) |x| {
@@ -305,7 +305,7 @@ pub fn decodeWholes(
     const RuneSet = @import("../util/runeset.zig").RuneSet;
     _ = groups;
 
-    var wholes: std.ArrayList(Whole) = .{};
+    var wholes: std.ArrayListUnmanaged(Whole) = .{};
     errdefer {
         for (wholes.items) |*whole| {
             whole.valid.deinit(allocator);
@@ -399,7 +399,7 @@ pub fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode 
 
     for (emojis) |*emoji| {
         // Start with just the root node
-        var nodes: std.ArrayList(*EmojiNode) = .{};
+        var nodes: std.ArrayListUnmanaged(*EmojiNode) = .{};
         defer nodes.deinit(allocator);
         try nodes.append(allocator, root);
 

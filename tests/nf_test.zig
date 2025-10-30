@@ -226,16 +226,15 @@ test "NF normalization tests" {
 test "NF initialization" {
     const allocator = testing.allocator;
 
-    // This should panic because init() is stubbed
-    // That's expected - we're building the test infrastructure
-    _ = NF.init(allocator) catch |err| {
-        // If init returns an error instead of panicking, that's also acceptable
+    // NF.init() is actually implemented, so test it properly
+    var nf = NF.init(allocator) catch |err| {
         std.debug.print("NF.init() returned error: {}\n", .{err});
         return;
     };
+    defer nf.deinit(allocator);
 
-    // If we get here, init succeeded (unexpected at this stage)
-    std.debug.print("NF.init() succeeded (unexpected - should be stubbed)\n", .{});
+    // If we get here, init succeeded as expected
+    std.debug.print("NF.init() succeeded as expected\n", .{});
 }
 
 // Test UTF-8 to codepoint conversion helper
