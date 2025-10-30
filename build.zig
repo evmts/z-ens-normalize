@@ -98,7 +98,36 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_init_tests.step);
 
     // ============================================================
-    // 5. Test Data Copy Step
+    // 5. Debug Executables
+    // ============================================================
+    const debug_mod = b.createModule(.{
+        .root_source_file = b.path("test_decomp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    debug_mod.addImport("z_ens_normalize", mod);
+
+    const debug_exe = b.addExecutable(.{
+        .name = "test_decomp",
+        .root_module = debug_mod,
+    });
+    b.installArtifact(debug_exe);
+
+    const excl_mod = b.createModule(.{
+        .root_source_file = b.path("test_excl.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    excl_mod.addImport("z_ens_normalize", mod);
+
+    const excl_exe = b.addExecutable(.{
+        .name = "test_excl",
+        .root_module = excl_mod,
+    });
+    b.installArtifact(excl_exe);
+
+    // ============================================================
+    // 6. Test Data Copy Step
     // ============================================================
     // Create a step to copy test data files (JSON files) to zig-out/test-data/
     // This is useful for tests that need to load external data files

@@ -195,8 +195,20 @@ test "NF normalization tests" {
                         std.debug.print("U+{X:0>4}", .{cp});
                     }
                     std.debug.print("]\n", .{});
-                    std.debug.print("    Expected: '{s}'\n", .{expected_nfc});
-                    std.debug.print("    Got:      '{s}'\n", .{nfc_utf8});
+                    std.debug.print("    Expected: '{s}' [", .{expected_nfc});
+                    const expected_cps = utf8ToCodepoints(allocator, expected_nfc) catch &[_]u21{};
+                    defer if (expected_cps.len > 0) allocator.free(expected_cps);
+                    for (expected_cps, 0..) |cp, idx| {
+                        if (idx > 0) std.debug.print(" ", .{});
+                        std.debug.print("U+{X:0>4}", .{cp});
+                    }
+                    std.debug.print("]\n", .{});
+                    std.debug.print("    Got:      '{s}' [", .{nfc_utf8});
+                    for (nfc_result, 0..) |cp, idx| {
+                        if (idx > 0) std.debug.print(" ", .{});
+                        std.debug.print("U+{X:0>4}", .{cp});
+                    }
+                    std.debug.print("]\n", .{});
                     failed_tests += 1;
 
                     // For now, we expect all tests to fail, so this is normal
@@ -235,6 +247,28 @@ test "NF initialization" {
 
     // If we get here, init succeeded as expected
     std.debug.print("NF.init() succeeded as expected\n", .{});
+}
+
+// Test decomp map contains problematic codepoints
+test "check decomp map for failing codepoints" {
+    const allocator = testing.allocator;
+
+    var nf = try NF.init(allocator);
+    defer nf.deinit(allocator);
+
+    const test_cps = [_]u21{ 0x0958, 0x0959, 0x095A, 0x09DC, 0x0A59, 0x0B5C, 0xFB3E };
+    for (test_cps) |tcp| {
+        if (nf.decomps.get(tcp)) |decomp| {
+            std.debug.print("U+{X:0>4} -> ", .{tcp});
+            for (decomp, 0..) |dc, i| {
+                if (i > 0) std.debug.print(" ", .{});
+                std.debug.print("U+{X:0>4}", .{dc});
+            }
+            std.debug.print("\n", .{});
+        } else {
+            std.debug.print("U+{X:0>4} -> NOT FOUND in decomps map\n", .{tcp});
+        }
+    }
 }
 
 // Test UTF-8 to codepoint conversion helper
