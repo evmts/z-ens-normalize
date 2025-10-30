@@ -37,7 +37,7 @@ const spec_data = @embedFile("spec.bin");
 /// 3. For each codepoint, read its string name
 ///
 /// Go reference: ensip15.go lines 38-44
-fn decodeNamedCodepoints(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u8) {
+pub fn decodeNamedCodepoints(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u8) {
     var map = std.AutoHashMap(u21, []const u8).init(allocator);
     errdefer {
         var iter = map.valueIterator();
@@ -72,7 +72,7 @@ fn decodeNamedCodepoints(decoder: *Decoder, allocator: Allocator) !std.AutoHashM
 ///   6. Store each key → rune sequence in map
 ///
 /// Go reference: ensip15.go lines 46-70
-fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u21) {
+pub fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, []const u21) {
     var map = std.AutoHashMap(u21, []const u21).init(allocator);
     errdefer {
         var iter = map.valueIterator();
@@ -137,7 +137,7 @@ fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u21, [
 ///   5. Read secondary codepoints (unique)
 ///
 /// Go reference: groups.go lines 43-60
-fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
+pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
     const RuneSet = @import("../util/runeset.zig").RuneSet;
 
     var groups = std.ArrayList(Group).init(allocator);
@@ -196,7 +196,7 @@ fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
 ///   6. Recursively decode each branch
 ///
 /// Go reference: emojis.go lines 38-61
-fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
+pub fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
     return decodeEmojisRecursive(decoder, allocator, &.{});
 }
 
@@ -297,7 +297,7 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
 /// Returns both wholes array and confusables map.
 ///
 /// Go reference: wholes.go lines 17-84
-fn decodeWholes(
+pub fn decodeWholes(
     decoder: *Decoder,
     groups: []Group,
     allocator: Allocator,
@@ -388,7 +388,7 @@ fn decodeWholes(
 ///    - At end: mark node with emoji
 ///
 /// Go reference: emojis.go lines 80-100
-fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode {
+pub fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode {
     const FE0F: u21 = 0xFE0F;
 
     const root = try allocator.create(EmojiNode);
@@ -474,7 +474,7 @@ fn compareRunes(a: []const u21, b: []const u21) i32 {
 /// Returns: Pointer to the group, or null if not found
 ///
 /// Go reference: groups.go lines 36-41
-fn findGroup(groups: []Group, name: []const u8) ?*Group {
+pub fn findGroup(groups: []Group, name: []const u8) ?*Group {
     for (groups) |*group| {
         if (std.mem.eql(u8, group.name, name)) {
             return group;
@@ -492,6 +492,24 @@ fn findGroup(groups: []Group, name: []const u8) ?*Group {
 /// Used to filter possiblyValid for the ASCII synthetic group.
 fn isAscii(cp: u21) bool {
     return cp < 0x80;
+}
+
+// ============================================================
+// Tree Cleanup
+// ============================================================
+
+/// Recursively free emoji tree structure
+///
+/// Walks the tree and frees all nodes and their children maps.
+pub fn freeEmojiTree(root: *EmojiNode, allocator: Allocator) void {
+    if (root.children) |*children| {
+        var iter = children.valueIterator();
+        while (iter.next()) |child_ptr| {
+            freeEmojiTree(child_ptr.*, allocator);
+        }
+        children.deinit();
+    }
+    allocator.destroy(root);
 }
 
 // ============================================================

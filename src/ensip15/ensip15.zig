@@ -27,6 +27,12 @@ const Error = errors.Error;
 
 const RuneSet = @import("../util/runeset.zig").RuneSet;
 const utils = @import("utils.zig");
+const init_mod = @import("init.zig");
+const NF = @import("../nf/nf.zig").NF;
+const Decoder = @import("../util/decoder.zig").Decoder;
+
+// Embed the spec.bin file at compile time
+const compressed = @embedFile("spec.bin");
 
 // ============================================================
 // Main ENSIP15 Structure
@@ -75,17 +81,330 @@ pub const Ensip15 = struct {
     _GREEK: ?*const Group = null,
 
     /// Initialize ENSIP15 normalization context
-    /// Note: Stubbed for Task 11
     pub fn init(allocator: Allocator) !Ensip15 {
+        var decoder = try Decoder.init(compressed, allocator);
+        defer decoder.deinit(allocator);
+
+        // Initialize NF
+        var nf_ptr = try allocator.create(NF);
+        nf_ptr.* = try NF.init(allocator);
+        errdefer {
+            nf_ptr.deinit(allocator);
+            allocator.destroy(nf_ptr);
+        }
+
+        // Read all RuneSets
+        const should_escape_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(should_escape_ints);
+        const should_escape = try RuneSet.fromInts(allocator, should_escape_ints);
+        errdefer should_escape.deinit(allocator);
+
+        const ignored_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(ignored_ints);
+        const ignored = try RuneSet.fromInts(allocator, ignored_ints);
+        errdefer ignored.deinit(allocator);
+
+        const combining_marks_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(combining_marks_ints);
+        const combining_marks = try RuneSet.fromInts(allocator, combining_marks_ints);
+        errdefer combining_marks.deinit(allocator);
+
+        const max_non_spacing_marks = decoder.ReadUnsigned();
+
+        const non_spacing_marks_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(non_spacing_marks_ints);
+        const non_spacing_marks = try RuneSet.fromInts(allocator, non_spacing_marks_ints);
+        errdefer non_spacing_marks.deinit(allocator);
+
+        const nfc_check_ints = try decoder.ReadUnique(allocator);
+        defer allocator.free(nfc_check_ints);
+        const nfc_check = try RuneSet.fromInts(allocator, nfc_check_ints);
+        errdefer nfc_check.deinit(allocator);
+
+        // Decode maps
+        const fenced = try init_mod.decodeNamedCodepoints(&decoder, allocator);
+        errdefer {
+            var iter = fenced.valueIterator();
+            while (iter.next()) |value| {
+                allocator.free(value.*);
+            }
+            fenced.deinit();
+        }
+
+        const mapped = try init_mod.decodeMapped(&decoder, allocator);
+        errdefer {
+            var iter = mapped.valueIterator();
+            while (iter.next()) |value| {
+                allocator.free(value.*);
+            }
+            mapped.deinit();
+        }
+
+        // Decode groups and emojis
+        const groups = try init_mod.decodeGroups(&decoder, allocator);
+        errdefer {
+            for (groups) |group| {
+                allocator.free(group.name);
+                group.primary.deinit(allocator);
+                group.secondary.deinit(allocator);
+            }
+            allocator.free(groups);
+        }
+
+        const emojis = try init_mod.decodeEmojis(&decoder, allocator);
+        errdefer {
+            for (emojis) |emoji| {
+                allocator.free(emoji.normalized);
+                allocator.free(emoji.beautified);
+            }
+            allocator.free(emojis);
+        }
+
+        // Decode wholes
+        const wholes_result = try init_mod.decodeWholes(&decoder, groups, allocator);
+        errdefer {
+            for (wholes_result.wholes) |whole| {
+                whole.valid.deinit(allocator);
+                whole.confused.deinit(allocator);
+                var iter = whole.complements.valueIterator();
+                while (iter.next()) |value| {
+                    allocator.free(value.*);
+                }
+                whole.complements.deinit();
+            }
+            allocator.free(wholes_result.wholes);
+            wholes_result.confusables.deinit();
+        }
+
+        decoder.assertEOF();
+
+        // Sort emojis
+        std.mem.sort(EmojiSequence, emojis, {}, struct {
+            fn lessThan(_: void, a: EmojiSequence, b: EmojiSequence) bool {
+                return utils.compareRunes(a.normalized, b.normalized) < 0;
+            }
+        }.lessThan);
+
+        // Build emoji tree
+        const emoji_root = try init_mod.makeEmojiTree(emojis, allocator);
+        errdefer init_mod.freeEmojiTree(emoji_root, allocator);
+
+        // Build possibly_valid set
+        var union_map = std.AutoHashMap(u21, void).init(allocator);
+        defer union_map.deinit();
+        var multi_map = std.AutoHashMap(u21, void).init(allocator);
+        defer multi_map.deinit();
+
+        for (groups) |*g| {
+            const primary = try g.primary.toArray(allocator);
+            defer allocator.free(primary);
+            const secondary = try g.secondary.toArray(allocator);
+            defer allocator.free(secondary);
+
+            for (primary) |cp| {
+                if (union_map.contains(cp)) {
+                    try multi_map.put(cp, {});
+                } else {
+                    try union_map.put(cp, {});
+                }
+            }
+            for (secondary) |cp| {
+                if (union_map.contains(cp)) {
+                    try multi_map.put(cp, {});
+                } else {
+                    try union_map.put(cp, {});
+                }
+            }
+        }
+
+        var possibly_valid_map = std.AutoHashMap(u21, void).init(allocator);
+        defer possibly_valid_map.deinit();
+
+        var union_iter = union_map.keyIterator();
+        while (union_iter.next()) |cp_ptr| {
+            const cp = cp_ptr.*;
+            try possibly_valid_map.put(cp, {});
+
+            const nfd_result = try nf_ptr.nfd(allocator, &[_]u21{cp});
+            defer allocator.free(nfd_result);
+            for (nfd_result) |nfd_cp| {
+                try possibly_valid_map.put(nfd_cp, {});
+            }
+        }
+
+        const possibly_valid = try RuneSet.fromInts(allocator, blk: {
+            var list = std.ArrayList(i32).init(allocator);
+            var pv_iter = possibly_valid_map.keyIterator();
+            while (pv_iter.next()) |cp_ptr| {
+                try list.append(@intCast(cp_ptr.*));
+            }
+            std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
+            break :blk try list.toOwnedSlice();
+        });
+        errdefer possibly_valid.deinit(allocator);
+
+        // Build unique_non_confusables
+        var multi_iter = multi_map.keyIterator();
+        while (multi_iter.next()) |cp_ptr| {
+            _ = union_map.remove(cp_ptr.*);
+        }
+        var conf_iter = wholes_result.confusables.keyIterator();
+        while (conf_iter.next()) |cp_ptr| {
+            _ = union_map.remove(cp_ptr.*);
+        }
+
+        const unique_non_confusables = try RuneSet.fromInts(allocator, blk: {
+            var list = std.ArrayList(i32).init(allocator);
+            var u_iter = union_map.keyIterator();
+            while (u_iter.next()) |cp_ptr| {
+                try list.append(@intCast(cp_ptr.*));
+            }
+            std.mem.sort(i32, list.items, {}, comptime std.sort.asc(i32));
+            break :blk try list.toOwnedSlice();
+        });
+        errdefer unique_non_confusables.deinit(allocator);
+
+        // Find groups
+        const latin_group = init_mod.findGroup(groups, "Latin").?;
+        const greek_group = init_mod.findGroup(groups, "Greek").?;
+
+        // Create ASCII group
+        const ascii_group = try allocator.create(Group);
+        errdefer allocator.destroy(ascii_group);
+
+        const ascii_filter = struct {
+            fn isAscii(cp: u21) bool {
+                return cp < 0x80;
+            }
+        }.isAscii;
+        const ascii_primary = try possibly_valid.filter(allocator, &ascii_filter);
+        errdefer ascii_primary.deinit(allocator);
+
+        ascii_group.* = Group{
+            .index = -1,
+            .name = "ASCII",
+            .restricted = false,
+            .cm_whitelisted = false,
+            .primary = ascii_primary,
+            .secondary = RuneSet.fromSlice(&[_]u21{}),
+        };
+
+        // Create EMOJI group
+        const emoji_group = try allocator.create(Group);
+        errdefer allocator.destroy(emoji_group);
+
+        emoji_group.* = Group{
+            .index = -1,
+            .name = "EMOJI",
+            .restricted = false,
+            .cm_whitelisted = false,
+            .primary = RuneSet.fromSlice(&[_]u21{}),
+            .secondary = RuneSet.fromSlice(&[_]u21{}),
+        };
+
         return Ensip15{
             .allocator = allocator,
+            .nf = nf_ptr,
+            .should_escape = should_escape,
+            .ignored = ignored,
+            .combining_marks = combining_marks,
+            .non_spacing_marks = non_spacing_marks,
+            .max_non_spacing_marks = @intCast(max_non_spacing_marks),
+            .nfc_check = nfc_check,
+            .fenced = fenced,
+            .mapped = mapped,
+            .groups = groups,
+            .emojis = emojis,
+            .emoji_root = emoji_root,
+            .possibly_valid = possibly_valid,
+            .wholes = wholes_result.wholes,
+            .confusables = wholes_result.confusables,
+            .unique_non_confusables = unique_non_confusables,
+            ._ASCII = ascii_group,
+            ._EMOJI = emoji_group,
+            ._LATIN = latin_group,
+            ._GREEK = greek_group,
         };
     }
 
     /// Cleanup resources
     pub fn deinit(self: *Ensip15) void {
-        _ = self;
-        // TODO: Free all allocated resources
+        // Free NF
+        if (self.nf) |nf_ptr| {
+            var nf_mut = @constCast(nf_ptr);
+            nf_mut.deinit(self.allocator);
+            self.allocator.destroy(nf_mut);
+        }
+
+        // Free RuneSets
+        self.should_escape.deinit(self.allocator);
+        self.ignored.deinit(self.allocator);
+        self.combining_marks.deinit(self.allocator);
+        self.non_spacing_marks.deinit(self.allocator);
+        self.nfc_check.deinit(self.allocator);
+        self.possibly_valid.deinit(self.allocator);
+        self.unique_non_confusables.deinit(self.allocator);
+
+        // Free maps
+        var fenced_iter = self.fenced.valueIterator();
+        while (fenced_iter.next()) |value| {
+            self.allocator.free(value.*);
+        }
+        self.fenced.deinit();
+
+        var mapped_iter = self.mapped.valueIterator();
+        while (mapped_iter.next()) |value| {
+            self.allocator.free(value.*);
+        }
+        self.mapped.deinit();
+
+        var confusables_iter = self.confusables.valueIterator();
+        while (confusables_iter.next()) |_| {
+            // Values in confusables map are references to wholes, not owned
+        }
+        self.confusables.deinit();
+
+        // Free groups array
+        for (self.groups) |group| {
+            self.allocator.free(group.name);
+            group.primary.deinit(self.allocator);
+            group.secondary.deinit(self.allocator);
+        }
+        self.allocator.free(self.groups);
+
+        // Free emojis array
+        for (self.emojis) |emoji| {
+            self.allocator.free(emoji.normalized);
+            self.allocator.free(emoji.beautified);
+        }
+        self.allocator.free(self.emojis);
+
+        // Free emoji tree
+        if (self.emoji_root) |root| {
+            init_mod.freeEmojiTree(root, self.allocator);
+        }
+
+        // Free wholes array
+        for (self.wholes) |whole| {
+            whole.valid.deinit(self.allocator);
+            whole.confused.deinit(self.allocator);
+            var comp_iter = whole.complements.valueIterator();
+            while (comp_iter.next()) |value| {
+                self.allocator.free(value.*);
+            }
+            whole.complements.deinit();
+        }
+        self.allocator.free(self.wholes);
+
+        // Free special groups
+        if (self._ASCII) |ascii| {
+            var ascii_mut = @constCast(ascii);
+            ascii_mut.primary.deinit(self.allocator);
+            self.allocator.destroy(ascii_mut);
+        }
+        if (self._EMOJI) |emoji| {
+            self.allocator.destroy(@constCast(emoji));
+        }
     }
 
     // ============================================================
@@ -112,10 +431,13 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     pub fn normalize(self: *const Ensip15, allocator: Allocator, name: []const u8) ![]u8 {
-        _ = self;
-        _ = allocator;
-        _ = name;
-        @panic("TODO: implement normalize()");
+        return self.transform(
+            allocator,
+            name,
+            nfcWrapper,
+            emojiNormalized,
+            normalizerNormalize,
+        );
     }
 
     /// Beautify a name according to ENSIP15 specification
@@ -137,10 +459,13 @@ pub const Ensip15 = struct {
     ///
     /// Note: Currently stubbed with @panic
     pub fn beautify(self: *const Ensip15, allocator: Allocator, name: []const u8) ![]u8 {
-        _ = self;
-        _ = allocator;
-        _ = name;
-        @panic("TODO: implement beautify()");
+        return self.transform(
+            allocator,
+            name,
+            nfcWrapper,
+            emojiBeautified,
+            normalizerBeautify,
+        );
     }
 
     // ============================================================
@@ -170,15 +495,44 @@ pub const Ensip15 = struct {
         self: *const Ensip15,
         allocator: Allocator,
         name: []const u8,
-        // TODO: Add function pointers for normalization strategies
-        // nf: *const fn([]const u21) []u21,
-        // ef: *const fn(EmojiSequence) []const u21,
-        // normalizer: *const fn([]const OutputToken) error![]const u8,
+        nf_fn: *const fn (*const NF, Allocator, []const u21) anyerror![]u21,
+        ef_fn: *const fn (*const EmojiSequence) []const u21,
+        normalizer_fn: *const fn (*const Ensip15, Allocator, []const OutputToken) anyerror![]u21,
     ) ![]u8 {
-        _ = self;
-        _ = allocator;
-        _ = name;
-        @panic("TODO: implement transform()");
+        // Split name by dots into labels
+        const labels = try utils.split(allocator, name);
+        defer allocator.free(labels);
+
+        // Process each label
+        var normalized_labels: std.ArrayList([]u8) = .{};
+        defer {
+            for (normalized_labels.items) |label| allocator.free(label);
+            normalized_labels.deinit(allocator);
+        }
+
+        for (labels) |label| {
+            // Convert UTF-8 to UTF-32
+            const cps = try utf8ToUtf32(allocator, label);
+            defer allocator.free(cps);
+
+            // Tokenize
+            const tokens = try self.outputTokenize(allocator, cps, nf_fn, ef_fn);
+            defer {
+                for (tokens) |token| allocator.free(token.codepoints);
+                allocator.free(tokens);
+            }
+
+            // Normalize and validate
+            const normalized_cps = try normalizer_fn(self, allocator, tokens);
+            defer allocator.free(normalized_cps);
+
+            // Convert back to UTF-8
+            const normalized_label = try utf32ToUtf8(allocator, normalized_cps);
+            try normalized_labels.append(allocator, normalized_label);
+        }
+
+        // Join labels with dots
+        return try utils.join(allocator, normalized_labels.items);
     }
 
     /// Tokenize codepoints into OutputToken stream
@@ -207,13 +561,108 @@ pub const Ensip15 = struct {
         self: *const Ensip15,
         allocator: Allocator,
         cps: []const u21,
-        // nf: *const fn([]const u21) []u21,
-        // ef: *const fn(EmojiSequence) []const u21,
+        nf_fn: *const fn (*const NF, Allocator, []const u21) anyerror![]u21,
+        ef_fn: *const fn (*const EmojiSequence) []const u21,
     ) ![]OutputToken {
-        _ = self;
-        _ = allocator;
-        _ = cps;
-        @panic("TODO: implement outputTokenize()");
+        var tokens: std.ArrayList(OutputToken) = .{};
+        errdefer {
+            for (tokens.items) |token| {
+                allocator.free(token.codepoints);
+            }
+            tokens.deinit(allocator);
+        }
+
+        var buf: std.ArrayList(u21) = .{};
+        defer buf.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < cps.len) {
+            if (self.parseEmojiAt(cps, i)) |result| {
+                // Flush text buffer
+                if (buf.items.len > 0) {
+                    const normalized = try nf_fn(self.nf.?, allocator, buf.items);
+                    try tokens.append(allocator, OutputToken{
+                        .codepoints = normalized,
+                        .emoji = null,
+                    });
+                    buf.clearRetainingCapacity();
+                }
+
+                // Add emoji token
+                const emoji_cps = ef_fn(result.emoji);
+                const owned_cps = try allocator.dupe(u21, emoji_cps);
+                try tokens.append(allocator, OutputToken{
+                    .codepoints = owned_cps,
+                    .emoji = result.emoji,
+                });
+
+                i = result.end;
+            } else {
+                const cp = cps[i];
+                if (self.possibly_valid.contains(cp)) {
+                    try buf.append(allocator, cp);
+                } else if (self.mapped.get(cp)) |mapped| {
+                    try buf.appendSlice(allocator, mapped);
+                } else if (!self.ignored.contains(cp)) {
+                    return Error.DisallowedCharacter;
+                }
+                i += 1;
+            }
+        }
+
+        // Flush remaining buffer
+        if (buf.items.len > 0) {
+            const normalized = try nf_fn(self.nf.?, allocator, buf.items);
+            try tokens.append(allocator, OutputToken{
+                .codepoints = normalized,
+                .emoji = null,
+            });
+        }
+
+        return tokens.toOwnedSlice(allocator);
+    }
+
+    /// Parse emoji sequence starting at position in codepoint array
+    ///
+    /// Walks the emoji trie to find the longest matching emoji sequence
+    /// starting at the given position.
+    ///
+    /// Parameters:
+    ///   - cps: Codepoint array to search
+    ///   - pos: Starting position in array
+    ///
+    /// Returns: Struct with emoji sequence and end position, or null if no match
+    fn parseEmojiAt(
+        self: *const Ensip15,
+        cps: []const u21,
+        pos: usize,
+    ) ?struct { emoji: *const EmojiSequence, end: usize } {
+        var node = self.emoji_root orelse return null;
+        var current_pos = pos;
+        var result: ?*const EmojiSequence = null;
+        var result_end: usize = 0;
+
+        while (current_pos < cps.len) {
+            if (node.children) |children| {
+                if (children.get(cps[current_pos])) |child| {
+                    node = child;
+                    current_pos += 1;
+                    if (node.emoji) |e| {
+                        result = e;
+                        result_end = current_pos;
+                    }
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if (result) |e| {
+            return .{ .emoji = e, .end = result_end };
+        }
+        return null;
     }
 
     // ============================================================
@@ -403,12 +852,12 @@ pub const Ensip15 = struct {
         }
 
         // Extract non-emoji chars
-        var chars = std.ArrayList(u21).init(allocator);
-        defer chars.deinit();
+        var chars: std.ArrayList(u21) = .{};
+        defer chars.deinit(allocator);
 
         for (tokens) |token| {
             if (token.emoji == null) {
-                try chars.appendSlice(token.codepoints);
+                try chars.appendSlice(allocator, token.codepoints);
             }
         }
 
@@ -520,6 +969,38 @@ pub const Ensip15 = struct {
         // For now, stub - no confusable checking
     }
 
+    // ============================================================
+    // Helper Functions - UTF Conversion
+    // ============================================================
+
+    /// Convert UTF-8 string to UTF-32 codepoint array
+    fn utf8ToUtf32(allocator: Allocator, utf8: []const u8) ![]u21 {
+        var result: std.ArrayList(u21) = .{};
+        errdefer result.deinit(allocator);
+
+        var i: usize = 0;
+        while (i < utf8.len) {
+            const len = try std.unicode.utf8ByteSequenceLength(utf8[i]);
+            const codepoint = try std.unicode.utf8Decode(utf8[i..][0..len]);
+            try result.append(allocator, codepoint);
+            i += len;
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Convert UTF-32 codepoint array to UTF-8 string
+    fn utf32ToUtf8(allocator: Allocator, utf32: []const u21) ![]u8 {
+        var result: std.ArrayList(u8) = .{};
+        errdefer result.deinit(allocator);
+
+        for (utf32) |cp| {
+            var buf: [4]u8 = undefined;
+            const len = try std.unicode.utf8Encode(cp, &buf);
+            try result.appendSlice(allocator, buf[0..len]);
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
     /// Convert codepoint to safe display string
     /// Note: Stubbed for future implementation
     fn safeCodepoint(self: *const Ensip15, cp: u21) []const u8 {
@@ -536,6 +1017,68 @@ pub const Ensip15 = struct {
         @panic("TODO: implement safeImplode()");
     }
 };
+
+// ============================================================
+// Callback Wrapper Functions
+// ============================================================
+
+/// Wrapper for NF.nfc() to match expected function signature
+fn nfcWrapper(nf: *const NF, allocator: Allocator, cps: []const u21) ![]u21 {
+    return nf.nfc(allocator, cps);
+}
+
+/// Extract normalized form from emoji sequence
+fn emojiNormalized(emoji: *const EmojiSequence) []const u21 {
+    return emoji.normalized;
+}
+
+/// Extract beautified form from emoji sequence
+fn emojiBeautified(emoji: *const EmojiSequence) []const u21 {
+    return emoji.beautified;
+}
+
+/// Normalizer function for normalize() - validates and returns codepoints as-is
+fn normalizerNormalize(
+    self: *const Ensip15,
+    allocator: Allocator,
+    tokens: []const OutputToken,
+) ![]u21 {
+    const cps = try utils.flattenTokens(allocator, tokens);
+    errdefer allocator.free(cps);
+
+    _ = try self.checkValidLabel(allocator, cps, tokens);
+
+    return cps;
+}
+
+/// Normalizer function for beautify() - validates and applies Greek XI beautification
+fn normalizerBeautify(
+    self: *const Ensip15,
+    allocator: Allocator,
+    tokens: []const OutputToken,
+) ![]u21 {
+    const cps_const = try utils.flattenTokens(allocator, tokens);
+    errdefer allocator.free(cps_const);
+
+    const group = try self.checkValidLabel(allocator, cps_const, tokens);
+
+    // Apply Greek XI beautification (U+03BE -> U+039E) if not Greek group
+    if (group != self._GREEK) {
+        // Need to make a mutable copy
+        const cps = try allocator.dupe(u21, cps_const);
+        allocator.free(cps_const);
+        errdefer allocator.free(cps);
+
+        for (cps) |*cp| {
+            if (cp.* == 0x3BE) { // Greek lowercase xi
+                cp.* = 0x39E; // Greek uppercase XI
+            }
+        }
+        return cps;
+    }
+
+    return cps_const;
+}
 
 // ============================================================
 // Utility Functions (imported from utils.zig)
