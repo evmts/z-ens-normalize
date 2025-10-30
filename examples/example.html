@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>z-ens-normalize WebAssembly Example</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        h1 { color: #333; }
+        .container {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover { background: #0056b3; }
+        .result {
+            margin: 20px 0;
+            padding: 15px;
+            background: white;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }
+        .error {
+            border-left-color: #dc3545;
+            color: #dc3545;
+        }
+        .success {
+            border-left-color: #28a745;
+        }
+        code {
+            background: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+        #status {
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <h1>🦎 z-ens-normalize WebAssembly Demo</h1>
+
+    <div id="status">Loading WebAssembly module...</div>
+
+    <div class="container">
+        <h2>Try ENS Name Normalization</h2>
+        <input type="text" id="nameInput" placeholder="Enter an ENS name (e.g., Nick.ETH)" value="Nick.ETH">
+        <div>
+            <button onclick="normalizeInput()">Normalize</button>
+            <button onclick="beautifyInput()">Beautify</button>
+        </div>
+    </div>
+
+    <div id="output"></div>
+
+    <div class="container">
+        <h2>Example Names to Try</h2>
+        <ul>
+            <li><code>Nick.ETH</code> → Basic normalization</li>
+            <li><code>🚀RaFFY🚴‍♂️.eTh</code> → Emoji handling</li>
+            <li><code>VITALIK.eth</code> → Case conversion</li>
+            <li><code>café.eth</code> → Unicode normalization</li>
+            <li><code>Ξ.eth</code> → Greek letters</li>
+            <li><code>invalid..name</code> → Error: empty label</li>
+            <li><code>test@example.eth</code> → Error: disallowed character</li>
+        </ul>
+    </div>
+
+    <script type="module">
+        let wasmInstance;
+        let wasmMemory;
+        let encoder = new TextEncoder();
+        let decoder = new TextDecoder();
+
+        // Error code mappings
+        const ERROR_MESSAGES = {
+            0: "Success",
+            [-1]: "Out of memory",
+            [-2]: "Invalid UTF-8 encoding",
+            [-3]: "Invalid label extension (-- at positions 2-3)",
+            [-4]: "Illegal script mixture",
+            [-5]: "Whole confusable",
+            [-6]: "Leading underscore",
+            [-7]: "Fenced leading",
+            [-8]: "Fenced adjacent",
+            [-9]: "Fenced trailing",
+            [-10]: "Disallowed character",
+            [-11]: "Empty label",
+            [-12]: "Combining mark leading",
+            [-13]: "Combining mark after emoji",
+            [-14]: "Non-spacing mark duplicate",
+            [-15]: "Non-spacing mark excessive",
+            [-99]: "Unknown error"
+        };
+
+        // Helper to write string to WASM memory
+        function writeStringToMemory(str) {
+            const bytes = encoder.encode(str);
+            const ptr = wasmInstance.exports.malloc(bytes.length + 1);
+            const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
+            memory.set(bytes, ptr);
+            memory[ptr + bytes.length] = 0; // null terminator
+            return { ptr, len: bytes.length };
+        }
+
+        // Helper to read result from WASM memory
+        function readResult(resultPtr) {
+            const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
+            const view = new DataView(wasmInstance.exports.memory.buffer);
+
+            // ZensResult struct layout: data (4 bytes), len (4 bytes), error_code (4 bytes)
+            const dataPtr = view.getUint32(resultPtr, true);
+            const len = view.getUint32(resultPtr + 4, true);
+            const errorCode = view.getInt32(resultPtr + 8, true);
+
+            if (errorCode !== 0) {
+                return { error: ERROR_MESSAGES[errorCode] || "Unknown error", code: errorCode };
+            }
+
+            const bytes = memory.slice(dataPtr, dataPtr + len);
+            const text = decoder.decode(bytes);
+
+            // Free the result
+            wasmInstance.exports.zens_free(resultPtr);
+
+            return { text };
+        }
+
+        // Load WASM module
+        async function loadWasm() {
+            try {
+                const response = await fetch('../zig-out/bin/z_ens_normalize.wasm');
+                const bytes = await response.arrayBuffer();
+
+                const { instance } = await WebAssembly.instantiate(bytes, {
+                    env: {
+                        // Provide any required imports here
+                    }
+                });
+
+                wasmInstance = instance;
+                wasmMemory = instance.exports.memory;
+
+                // Initialize library
+                instance.exports.zens_init();
+
+                document.getElementById('status').textContent = 'WebAssembly module loaded successfully! ✓';
+                document.getElementById('status').style.color = '#28a745';
+
+                // Make functions globally available
+                window.normalizeInput = normalizeInput;
+                window.beautifyInput = beautifyInput;
+
+            } catch (err) {
+                document.getElementById('status').textContent = 'Error loading WebAssembly: ' + err.message;
+                document.getElementById('status').style.color = '#dc3545';
+                console.error(err);
+            }
+        }
+
+        // Normalize function
+        function normalizeInput() {
+            const input = document.getElementById('nameInput').value;
+            try {
+                const { ptr, len } = writeStringToMemory(input);
+                const resultPtr = wasmInstance.exports.zens_normalize(ptr, len);
+                const result = readResult(resultPtr);
+
+                displayResult('Normalize', input, result);
+            } catch (err) {
+                displayError('Normalize', err.message);
+            }
+        }
+
+        // Beautify function
+        function beautifyInput() {
+            const input = document.getElementById('nameInput').value;
+            try {
+                const { ptr, len } = writeStringToMemory(input);
+                const resultPtr = wasmInstance.exports.zens_beautify(ptr, len);
+                const result = readResult(resultPtr);
+
+                displayResult('Beautify', input, result);
+            } catch (err) {
+                displayError('Beautify', err.message);
+            }
+        }
+
+        // Display result
+        function displayResult(operation, input, result) {
+            const output = document.getElementById('output');
+            if (result.error) {
+                output.innerHTML = `
+                    <div class="result error">
+                        <strong>${operation} Error:</strong><br>
+                        Input: <code>${escapeHtml(input)}</code><br>
+                        Error: ${result.error} (code: ${result.code})
+                    </div>
+                `;
+            } else {
+                output.innerHTML = `
+                    <div class="result success">
+                        <strong>${operation} Success:</strong><br>
+                        Input: <code>${escapeHtml(input)}</code><br>
+                        Output: <code>${escapeHtml(result.text)}</code>
+                    </div>
+                `;
+            }
+        }
+
+        // Display error
+        function displayError(operation, message) {
+            const output = document.getElementById('output');
+            output.innerHTML = `
+                <div class="result error">
+                    <strong>${operation} Failed:</strong><br>
+                    ${message}
+                </div>
+            `;
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Load on page load
+        loadWasm();
+    </script>
+</body>
+</html>

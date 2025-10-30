@@ -14,6 +14,8 @@ A complete port of [go-ens-normalize](https://github.com/adraffy/go-ens-normaliz
 - **Thread-Safe** - Singleton pattern with lazy initialization via `std.once()`
 - **Memory Efficient** - Explicit allocator parameters for full control
 - **Unicode 16.0.0** - Latest Unicode standard support
+- **C FFI Compatible** - Full C bindings for interoperability
+- **WebAssembly Ready** - Browser and Node.js WASM support
 
 ## Installation
 
@@ -222,6 +224,197 @@ This downloads:
 - `ensip15-tests.json` - ENSIP-15 validation test cases
 - `nf-tests.json` - Unicode normalization test cases
 
+## C FFI Bindings
+
+The library provides a complete C API for interoperability with C/C++ and other languages.
+
+### Building C Library
+
+```bash
+# Build C FFI library
+zig build c-lib
+
+# Output: zig-out/lib/libz_ens_normalize_c.a
+# Header: zig-out/include/z_ens_normalize.h
+```
+
+### C API Usage
+
+```c
+#include <stdio.h>
+#include "z_ens_normalize.h"
+
+int main(void) {
+    // Initialize library (optional)
+    zens_init();
+
+    // Normalize a name
+    ZensResult result = zens_normalize("Nick.ETH", 0);
+    if (result.error_code == ZENS_SUCCESS) {
+        printf("Normalized: %.*s\n", (int)result.len, result.data);
+        zens_free(result);
+    } else {
+        printf("Error: %s\n", zens_error_message(result.error_code));
+    }
+
+    // Cleanup (optional)
+    zens_deinit();
+    return 0;
+}
+```
+
+### Compiling C Programs
+
+```bash
+# Using GCC
+gcc your_program.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o your_program
+
+# Using Clang
+clang your_program.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o your_program
+```
+
+### C API Reference
+
+#### Functions
+
+**`int32_t zens_init(void)`**
+- Initialize the library (optional but recommended)
+- Returns 0 on success
+
+**`void zens_deinit(void)`**
+- Cleanup library resources
+- Call at program exit
+
+**`ZensResult zens_normalize(const uint8_t *input, size_t input_len)`**
+- Normalize an ENS name
+- `input_len` can be 0 to use strlen()
+- Returns `ZensResult` with normalized name or error
+
+**`ZensResult zens_beautify(const uint8_t *input, size_t input_len)`**
+- Beautify an ENS name with visual enhancements
+- Same parameters as `zens_normalize()`
+
+**`void zens_free(ZensResult result)`**
+- Free memory allocated by normalize/beautify
+- Must be called for successful results
+
+**`const char* zens_error_message(int32_t error_code)`**
+- Get human-readable error message
+- Returns static string (do not free)
+
+#### Error Codes
+
+```c
+typedef enum {
+    ZENS_SUCCESS = 0,
+    ZENS_ERROR_OUT_OF_MEMORY = -1,
+    ZENS_ERROR_INVALID_UTF8 = -2,
+    ZENS_ERROR_INVALID_LABEL_EXTENSION = -3,
+    ZENS_ERROR_ILLEGAL_MIXTURE = -4,
+    ZENS_ERROR_WHOLE_CONFUSABLE = -5,
+    ZENS_ERROR_LEADING_UNDERSCORE = -6,
+    ZENS_ERROR_DISALLOWED_CHARACTER = -10,
+    ZENS_ERROR_EMPTY_LABEL = -11,
+    // ... more error codes
+} ZensErrorCode;
+```
+
+See `include/z_ens_normalize.h` for complete API documentation.
+
+## WebAssembly
+
+The library can be compiled to WebAssembly for use in browsers and Node.js.
+
+### Building WebAssembly
+
+```bash
+# Build for browsers/Node.js (freestanding)
+zig build wasm
+# Output: zig-out/bin/z_ens_normalize.wasm
+
+# Build with WASI support
+zig build wasi
+# Output: zig-out/bin/z_ens_normalize_wasi.wasm
+
+# Build both
+zig build wasm-all
+```
+
+### Browser Usage
+
+```html
+<!DOCTYPE html>
+<html>
+<body>
+    <script type="module">
+        // Load WASM module
+        const response = await fetch('z_ens_normalize.wasm');
+        const bytes = await response.arrayBuffer();
+        const { instance } = await WebAssembly.instantiate(bytes, {});
+
+        // Initialize
+        instance.exports.zens_init();
+
+        // Helper to encode string
+        const encoder = new TextEncoder();
+        function normalize(name) {
+            const bytes = encoder.encode(name);
+            const ptr = instance.exports.malloc(bytes.length);
+            const memory = new Uint8Array(instance.exports.memory.buffer);
+            memory.set(bytes, ptr);
+
+            const resultPtr = instance.exports.zens_normalize(ptr, bytes.length);
+            // ... read result from memory
+        }
+
+        console.log(normalize("Nick.ETH")); // "nick.eth"
+    </script>
+</body>
+</html>
+```
+
+### Node.js Usage
+
+```javascript
+import { readFile } from 'fs/promises';
+
+// Load WASM
+const wasmBuffer = await readFile('z_ens_normalize.wasm');
+const { instance } = await WebAssembly.instantiate(wasmBuffer, {});
+
+// Initialize
+instance.exports.zens_init();
+
+// Use normalize/beautify functions (see examples/example_node.mjs)
+```
+
+### WASM Examples
+
+Complete examples are provided in the `examples/` directory:
+
+- **`examples/example.html`** - Browser example with interactive UI
+- **`examples/example_node.mjs`** - Node.js example with ES modules
+- **`examples/example.c`** - C API example
+
+Run the examples:
+
+```bash
+# C example
+zig build c-lib
+gcc examples/example.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o example
+./example
+
+# Node.js example
+zig build wasm
+node examples/example_node.mjs
+
+# Browser example
+zig build wasm
+# Serve examples/ directory with HTTP server
+python -m http.server 8000
+# Open http://localhost:8000/examples/example.html
+```
+
 ## Build Process
 
 ### Standard Build
@@ -245,6 +438,17 @@ zig build -Dtarget=x86_64-linux
 
 # Build static library for all targets
 zig build --summary all
+```
+
+### All Build Targets
+
+```bash
+zig build              # Default library
+zig build test         # Run tests
+zig build c-lib        # C FFI library
+zig build wasm         # WebAssembly (freestanding)
+zig build wasi         # WebAssembly (WASI)
+zig build wasm-all     # All WASM variants
 ```
 
 ### Development Workflow
@@ -273,7 +477,8 @@ zig build --summary all
 ```
 z-ens-normalize/
 ├── src/
-│   ├── root.zig              # Public API & singleton
+│   ├── root.zig              # Public Zig API & singleton
+│   ├── root_c.zig            # C FFI bindings
 │   ├── ensip15/
 │   │   ├── ensip15.zig       # Main normalization logic
 │   │   ├── init.zig          # Data initialization
@@ -287,6 +492,12 @@ z-ens-normalize/
 │   └── util/
 │       ├── decoder.zig       # Binary data decoder
 │       └── runeset.zig       # Efficient rune set
+├── include/
+│   └── z_ens_normalize.h     # C API header
+├── examples/
+│   ├── example.c             # C API example
+│   ├── example.html          # Browser WASM example
+│   └── example_node.mjs      # Node.js WASM example
 ├── tests/
 │   ├── ensip15_test.zig      # ENSIP-15 validation tests
 │   ├── nf_test.zig           # Unicode normalization tests
