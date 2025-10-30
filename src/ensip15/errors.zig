@@ -40,6 +40,15 @@ pub const Error = error{
     /// Whole confusable sequence detected
     WholeConfusable,
 
+    /// Duplicate non-spacing marks in sequence
+    NSMDuplicate,
+
+    /// Excessive non-spacing marks (exceeds maximum)
+    NSMExcessive,
+
+    /// Illegal mixture of characters from incompatible groups
+    IllegalMixture,
+
     /// Other validation errors
     InvalidCodepoint,
     InvalidEmoji,
