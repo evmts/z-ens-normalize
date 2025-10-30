@@ -221,3 +221,9 @@ scripts/*.js
 
 # Documentation build artifacts
 docs/.astro/
+
+# External reference implementation (cloned repo)
+go-ens-normalize/
+
+# Duplicate test data (originals in test-data/)
+tests/*.json
