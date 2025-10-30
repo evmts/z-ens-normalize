@@ -364,11 +364,6 @@ pub fn decodeWholes(
 
         try wholes.append(allocator, whole);
 
-        // Add to confusables map
-        for (confused.runes) |cp| {
-            try confusables.put(cp, whole);
-        }
-
         // Build complements map using extent algorithm
         var cover = std.AutoHashMap(*const Group, void).init(allocator);
         defer cover.deinit();
@@ -455,6 +450,12 @@ pub fn decodeWholes(
                 try wholes.items[wholes.items.len - 1].complements.put(cp.*, try allocator.dupe(i32, comps_copy));
             }
             allocator.free(comps_copy);
+        }
+
+        // Add to confusables map AFTER complements are populated
+        const whole_ref = &wholes.items[wholes.items.len - 1];
+        for (whole_ref.confused.runes) |cp| {
+            try confusables.put(cp, whole_ref.*);
         }
     }
 
