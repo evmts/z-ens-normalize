@@ -156,6 +156,9 @@ pub const NF = struct {
         // Assert we've consumed all data
         decoder.assertEOF();
 
+        // Clean up decoder's allocated memory
+        decoder.deinit(allocator);
+
         return NF{
             .unicodeVersion = unicodeVersion,
             .exclusions = exclusions,
