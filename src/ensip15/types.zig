@@ -59,6 +59,11 @@ pub const Group = struct {
 
     /// Secondary codepoints for this group
     secondary: RuneSet,
+
+    /// Check if this group contains a codepoint (in primary or secondary)
+    pub fn contains(self: *const Group, cp: u21) bool {
+        return self.primary.contains(cp) or self.secondary.contains(cp);
+    }
 };
 
 /// Represents a whole confusable sequence
