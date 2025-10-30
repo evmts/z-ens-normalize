@@ -959,14 +959,78 @@ pub const Ensip15 = struct {
     }
 
     /// Check for whole confusable sequences
-    /// Note: Stubbed - confusable detection not yet implemented
+    ///
+    /// Algorithm:
+    /// 1. For each unique codepoint:
+    ///    - If confusable: intersect its complement list with universe
+    ///    - If unique non-confusable: return early (no confusable)
+    ///    - Otherwise: add to shared list
+    /// 2. Check if any group in universe contains ALL shared codepoints
+    /// 3. If yes: return WholeConfusable error
+    ///
+    /// Go reference: wholes.go lines 86-130
     fn checkWhole(self: *const Ensip15, group: *const Group, unique: []const u21, allocator: Allocator) !void {
-        _ = self;
-        _ = group;
-        _ = unique;
-        _ = allocator;
-        // TODO: Implement confusable detection
-        // For now, stub - no confusable checking
+        _ = group; // Used for error reporting in Go, but Zig error enum doesn't carry context
+        var shared: std.ArrayListUnmanaged(u21) = .{};
+        defer shared.deinit(allocator);
+
+        var universe: std.ArrayListUnmanaged(i32) = .{};
+        defer universe.deinit(allocator);
+
+        var prev: usize = 0;
+
+        // Process each unique codepoint
+        for (unique) |cp| {
+            if (self.confusables.get(cp)) |whole| {
+                // This is a confusable codepoint
+                const comp = whole.complements.get(cp) orelse &[_]i32{};
+
+                if (prev == 0) {
+                    // First confusable: initialize universe
+                    try universe.appendSlice(allocator, comp);
+                    prev = comp.len;
+                } else {
+                    // Subsequent confusables: intersect with universe
+                    var next: usize = 0;
+                    for (0..prev) |i| {
+                        // Check if universe[i] exists in comp (binary search)
+                        if (std.mem.indexOfScalar(i32, comp, universe.items[i])) |_| {
+                            universe.items[next] = universe.items[i];
+                            next += 1;
+                        }
+                    }
+                    prev = next;
+                }
+
+                // If universe is empty, no possible confusables
+                if (prev == 0) {
+                    return;
+                }
+            } else if (self.unique_non_confusables.contains(cp)) {
+                // Unique non-confusable breaks confusability
+                return;
+            } else {
+                // Shared codepoint (exists in multiple groups)
+                try shared.append(allocator, cp);
+            }
+        }
+
+        // Check if any group in universe contains all shared codepoints
+        if (prev > 0) {
+            next: for (0..prev) |i| {
+                const other = &self.groups[@intCast(universe.items[i])];
+
+                // Check if other group contains ALL shared codepoints
+                for (shared.items) |cp| {
+                    if (!other.contains(cp)) {
+                        continue :next;
+                    }
+                }
+
+                // Found a confusable group!
+                return Error.WholeConfusable;
+            }
+        }
     }
 
     // ============================================================

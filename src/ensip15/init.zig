@@ -303,7 +303,17 @@ pub fn decodeWholes(
     allocator: Allocator,
 ) !struct { wholes: []Whole, confusables: std.AutoHashMap(u21, Whole) } {
     const RuneSet = @import("../util/runeset.zig").RuneSet;
-    _ = groups;
+
+    // Helper struct for tracking group extents
+    const Extent = struct {
+        gs: std.AutoHashMap(*const Group, void),
+        cps: std.AutoHashMap(u21, void),
+
+        fn deinit(self: *@This()) void {
+            self.gs.deinit();
+            self.cps.deinit();
+        }
+    };
 
     var wholes: std.ArrayListUnmanaged(Whole) = .{};
     errdefer {
@@ -359,9 +369,93 @@ pub fn decodeWholes(
             try confusables.put(cp, whole);
         }
 
-        // TODO: Decode and build complements map
-        // This is complex logic involving group extents and will be implemented later
-        // For now, the complements map is empty
+        // Build complements map using extent algorithm
+        var cover = std.AutoHashMap(*const Group, void).init(allocator);
+        defer cover.deinit();
+
+        var extents: std.ArrayListUnmanaged(*Extent) = .{};
+        defer {
+            for (extents.items) |ext| {
+                ext.deinit();
+                allocator.destroy(ext);
+            }
+            extents.deinit(allocator);
+        }
+
+        // Combine valid and confused codepoints
+        var all_cps: std.ArrayListUnmanaged(u21) = .{};
+        defer all_cps.deinit(allocator);
+        try all_cps.appendSlice(allocator, valid.runes);
+        try all_cps.appendSlice(allocator, confused.runes);
+
+        // For each codepoint, find which groups contain it and assign to extent
+        for (all_cps.items) |cp| {
+            // Find all groups containing this codepoint
+            var gs = std.AutoHashMap(*const Group, void).init(allocator);
+            defer gs.deinit();
+
+            for (groups) |*g| {
+                if (g.contains(cp)) {
+                    try gs.put(g, {});
+                }
+            }
+
+            // Find extent that shares a group with this codepoint
+            var ext: ?*Extent = null;
+            outer: for (extents.items) |x| {
+                var gs_iter = gs.keyIterator();
+                while (gs_iter.next()) |g| {
+                    if (x.gs.contains(g.*)) {
+                        ext = x;
+                        break :outer;
+                    }
+                }
+            }
+
+            // Create new extent if none found
+            if (ext == null) {
+                const new_ext = try allocator.create(Extent);
+                new_ext.* = Extent{
+                    .gs = std.AutoHashMap(*const Group, void).init(allocator),
+                    .cps = std.AutoHashMap(u21, void).init(allocator),
+                };
+                try extents.append(allocator, new_ext);
+                ext = new_ext;
+            }
+
+            // Add groups and codepoint to extent
+            var gs_iter = gs.keyIterator();
+            while (gs_iter.next()) |g| {
+                try ext.?.gs.put(g.*, {});
+                try cover.put(g.*, {});
+            }
+            try ext.?.cps.put(cp, {});
+        }
+
+        // For each extent, compute complement (groups NOT in extent)
+        for (extents.items) |x| {
+            var comps: std.ArrayListUnmanaged(i32) = .{};
+            defer comps.deinit(allocator);
+
+            var cover_iter = cover.keyIterator();
+            while (cover_iter.next()) |g| {
+                if (!x.gs.contains(g.*)) {
+                    try comps.append(allocator, g.*.index);
+                }
+            }
+
+            // Sort complements
+            std.mem.sort(i32, comps.items, {}, comptime std.sort.asc(i32));
+
+            // Store complement for each codepoint in this extent
+            const comps_copy = try comps.toOwnedSlice(allocator);
+            var cps_iter = x.cps.keyIterator();
+            while (cps_iter.next()) |cp| {
+                // Store reference to same array for all codepoints in extent
+                try wholes.items[wholes.items.len - 1].complements.put(cp.*, try allocator.dupe(i32, comps_copy));
+            }
+            allocator.free(comps_copy);
+        }
     }
 
     return .{
