@@ -241,8 +241,6 @@ pub const Ensip15 = struct {
     /// 2. For each codepoint:
     ///    - If allowed and cp != underscore: allowed = false
     ///    - If not allowed and cp == underscore: ERROR
-    ///
-    /// Note: Currently stubbed with @panic
     fn checkLeadingUnderscore(cps: []const u21) !void {
         const UNDERSCORE: u21 = 0x5F;
         var allowed = true;
@@ -277,8 +275,6 @@ pub const Ensip15 = struct {
     /// Algorithm:
     /// 1. If length < 4: valid (skip check)
     /// 2. If cps[2] == hyphen AND cps[3] == hyphen: ERROR
-    ///
-    /// Note: Currently stubbed with @panic
     fn checkLabelExtension(cps: []const u21) !void {
         const HYPHEN: u21 = 0x2D;
         if (cps.len >= 4 and cps[2] == HYPHEN and cps[3] == HYPHEN) {
@@ -305,8 +301,6 @@ pub const Ensip15 = struct {
     ///       - If first codepoint is combining mark:
     ///         - If token is first (i == 0): ERROR (CM at start)
     ///         - Else if previous token is emoji: ERROR (CM after emoji)
-    ///
-    /// Note: Currently stubbed with @panic
     fn checkCombiningMarks(self: *const Ensip15, tokens: []const OutputToken) !void {
         for (tokens, 0..) |token, i| {
             if (token.emoji == null and token.codepoints.len > 0) {
@@ -341,8 +335,6 @@ pub const Ensip15 = struct {
     ///       - Update lastPos = current index + 1
     ///       - Update lastName
     /// 4. If lastPos == length: ERROR (fenced trailing)
-    ///
-    /// Note: Currently stubbed with @panic
     fn checkFenced(self: *const Ensip15, cps: []const u21) !void {
         if (cps.len == 0) return;
 
@@ -394,8 +386,6 @@ pub const Ensip15 = struct {
     /// 11. Check group-specific rules
     /// 12. Check whole confusables
     /// 13. Return group
-    ///
-    /// Note: Currently stubbed with @panic
     fn checkValidLabel(
         self: *const Ensip15,
         allocator: Allocator,
@@ -444,7 +434,6 @@ pub const Ensip15 = struct {
     // ============================================================
 
     /// Determine which script group a set of codepoints belongs to
-    /// Note: Stubbed for future implementation
     fn determineGroup(self: *const Ensip15, unique: []const u21, allocator: Allocator) !*const Group {
         // Clone groups array
         var gs = try allocator.alloc(*const Group, self.groups.len);
@@ -476,7 +465,6 @@ pub const Ensip15 = struct {
     }
 
     /// Check group-specific validation rules
-    /// Note: Stubbed for future implementation
     fn checkGroup(self: *const Ensip15, group: *const Group, chars: []const u21, allocator: Allocator) !void {
         // Verify all chars in group
         for (chars) |cp| {
@@ -522,7 +510,7 @@ pub const Ensip15 = struct {
     }
 
     /// Check for whole confusable sequences
-    /// Note: Stubbed for future implementation
+    /// Note: Stubbed - confusable detection not yet implemented
     fn checkWhole(self: *const Ensip15, group: *const Group, unique: []const u21, allocator: Allocator) !void {
         _ = self;
         _ = group;
@@ -568,4 +556,38 @@ test "Ensip15 init and deinit" {
     var ensip15 = try Ensip15.init(allocator);
     defer ensip15.deinit();
     // Just verify it compiles
+}
+
+test "checkLeadingUnderscore - valid cases" {
+    // Valid: leading underscores only
+    try Ensip15.checkLeadingUnderscore(&[_]u21{ 0x5F, 0x5F, 0x61 }); // "__a"
+    try Ensip15.checkLeadingUnderscore(&[_]u21{ 0x61, 0x62 }); // "ab"
+    try Ensip15.checkLeadingUnderscore(&[_]u21{0x5F}); // "_"
+    try Ensip15.checkLeadingUnderscore(&[_]u21{}); // empty
+}
+
+test "checkLeadingUnderscore - invalid cases" {
+    // Invalid: underscore after non-underscore
+    const result = Ensip15.checkLeadingUnderscore(&[_]u21{ 0x61, 0x5F }); // "a_"
+    try std.testing.expectError(Error.LeadingUnderscore, result);
+
+    const result2 = Ensip15.checkLeadingUnderscore(&[_]u21{ 0x5F, 0x61, 0x5F }); // "_a_"
+    try std.testing.expectError(Error.LeadingUnderscore, result2);
+}
+
+test "checkLabelExtension - valid cases" {
+    // Valid: not xn-- pattern
+    try Ensip15.checkLabelExtension(&[_]u21{ 0x61, 0x62, 0x63 }); // "abc"
+    try Ensip15.checkLabelExtension(&[_]u21{ 0x61, 0x62, 0x2D, 0x63 }); // "ab-c"
+    try Ensip15.checkLabelExtension(&[_]u21{ 0x61, 0x62 }); // "ab" (too short)
+    try Ensip15.checkLabelExtension(&[_]u21{ 0x2D, 0x2D, 0x2D, 0x61 }); // "---a"
+}
+
+test "checkLabelExtension - invalid cases" {
+    // Invalid: xn-- pattern
+    const result = Ensip15.checkLabelExtension(&[_]u21{ 0x78, 0x6E, 0x2D, 0x2D }); // "xn--"
+    try std.testing.expectError(Error.InvalidLabelExtension, result);
+
+    const result2 = Ensip15.checkLabelExtension(&[_]u21{ 0x61, 0x62, 0x2D, 0x2D, 0x63 }); // "ab--c"
+    try std.testing.expectError(Error.InvalidLabelExtension, result2);
 }
