@@ -402,11 +402,41 @@ pub const Ensip15 = struct {
         cps: []const u21,
         tokens: []const OutputToken,
     ) !?*const Group {
-        _ = self;
-        _ = allocator;
-        _ = cps;
-        _ = tokens;
-        @panic("TODO: implement checkValidLabel()");
+        if (cps.len == 0) return Error.EmptyLabel;
+
+        try checkLeadingUnderscore(cps);
+
+        const has_emoji = tokens.len > 1 or tokens[0].emoji != null;
+        if (!has_emoji and utils.isAscii(cps)) {
+            try checkLabelExtension(cps);
+            return self._ASCII;
+        }
+
+        // Extract non-emoji chars
+        var chars = std.ArrayList(u21).init(allocator);
+        defer chars.deinit();
+
+        for (tokens) |token| {
+            if (token.emoji == null) {
+                try chars.appendSlice(token.codepoints);
+            }
+        }
+
+        if (has_emoji and chars.items.len == 0) {
+            return self._EMOJI;
+        }
+
+        try self.checkCombiningMarks(tokens);
+        try self.checkFenced(cps);
+
+        const unique = try utils.uniqueRunes(allocator, chars.items);
+        defer allocator.free(unique);
+
+        const group = try self.determineGroup(unique, allocator);
+        try self.checkGroup(group, chars.items, allocator);
+        try self.checkWhole(group, unique, allocator);
+
+        return group;
     }
 
     // ============================================================
