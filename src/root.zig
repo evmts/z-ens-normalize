@@ -104,15 +104,12 @@ var singleton_instance: Ensip15 = undefined;
 /// Initialize the singleton instance.
 /// Called exactly once by singleton_once.call().
 /// Panics if initialization fails (should never happen with valid embedded data).
+var singleton_arena: std.heap.ArenaAllocator = undefined;
+
 fn initSingleton() void {
-    // TODO: When Ensip15.init() is fully implemented, use:
-    // singleton_instance = Ensip15.init(std.heap.page_allocator) catch |err| {
-    //     @panic("Failed to initialize ENSIP15 singleton");
-    // };
-    //
-    // For now, use a stub init that works with the current structure
-    // The methods are stubbed with @panic anyway, so this is acceptable
-    singleton_instance = Ensip15.init(std.heap.page_allocator) catch
+    // Use arena allocator for fast batch allocations
+    singleton_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    singleton_instance = Ensip15.init(singleton_arena.allocator()) catch
         @panic("Failed to initialize ENSIP15 singleton");
 }
 
