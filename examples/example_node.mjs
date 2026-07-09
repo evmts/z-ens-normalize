@@ -33,11 +33,13 @@ const ERROR_MESSAGES = {
     [-99]: "Unknown error"
 };
 
+// ZensResult struct layout on wasm32: data (u32), len (u32), error_code (i32)
+const RESULT_SIZE = 12;
+
 class ZensNormalize {
     constructor(instance) {
         this.instance = instance;
         this.exports = instance.exports;
-        this.memory = this.exports.memory;
         this.encoder = new TextEncoder();
         this.decoder = new TextDecoder();
 
@@ -47,49 +49,52 @@ class ZensNormalize {
 
     writeStringToMemory(str) {
         const bytes = this.encoder.encode(str);
-        const ptr = this.exports.malloc(bytes.length + 1);
-        const memory = new Uint8Array(this.memory.buffer);
-        memory.set(bytes, ptr);
-        memory[ptr + bytes.length] = 0; // null terminator
+        const ptr = this.exports.zens_alloc(bytes.length);
+        if (ptr === 0) throw new Error('wasm allocation failed');
+        // Create the view after zens_alloc: growing memory detaches old buffers
+        new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
         return { ptr, len: bytes.length };
     }
 
-    readResult(resultPtr) {
-        const memory = new Uint8Array(this.memory.buffer);
-        const view = new DataView(this.memory.buffer);
-
-        // ZensResult struct layout: data (4 bytes), len (4 bytes), error_code (4 bytes)
-        const dataPtr = view.getUint32(resultPtr, true);
-        const len = view.getUint32(resultPtr + 4, true);
-        const errorCode = view.getInt32(resultPtr + 8, true);
-
-        if (errorCode !== 0) {
-            return {
-                success: false,
-                error: ERROR_MESSAGES[errorCode] || "Unknown error",
-                code: errorCode
-            };
+    callInto(fnName, input) {
+        const { ptr, len } = this.writeStringToMemory(input);
+        const resultPtr = this.exports.zens_alloc(RESULT_SIZE);
+        if (resultPtr === 0) {
+            this.exports.zens_dealloc(ptr, len);
+            throw new Error('wasm allocation failed');
         }
+        try {
+            this.exports[fnName](resultPtr, ptr, len);
 
-        const bytes = memory.slice(dataPtr, dataPtr + len);
-        const text = this.decoder.decode(bytes);
+            const view = new DataView(this.exports.memory.buffer);
+            const dataPtr = view.getUint32(resultPtr, true);
+            const dataLen = view.getUint32(resultPtr + 4, true);
+            const errorCode = view.getInt32(resultPtr + 8, true);
 
-        // Free the result
-        this.exports.zens_free(resultPtr);
+            if (errorCode !== 0) {
+                return {
+                    success: false,
+                    error: ERROR_MESSAGES[errorCode] || "Unknown error",
+                    code: errorCode
+                };
+            }
 
-        return { success: true, text };
+            // Copy the bytes out before freeing the result
+            const bytes = new Uint8Array(this.exports.memory.buffer, dataPtr, dataLen).slice();
+            this.exports.zens_free_result(resultPtr);
+            return { success: true, text: this.decoder.decode(bytes) };
+        } finally {
+            this.exports.zens_dealloc(resultPtr, RESULT_SIZE);
+            this.exports.zens_dealloc(ptr, len);
+        }
     }
 
     normalize(input) {
-        const { ptr, len } = this.writeStringToMemory(input);
-        const resultPtr = this.exports.zens_normalize(ptr, len);
-        return this.readResult(resultPtr);
+        return this.callInto('zens_normalize_into', input);
     }
 
     beautify(input) {
-        const { ptr, len } = this.writeStringToMemory(input);
-        const resultPtr = this.exports.zens_beautify(ptr, len);
-        return this.readResult(resultPtr);
+        return this.callInto('zens_beautify_into', input);
     }
 
     deinit() {

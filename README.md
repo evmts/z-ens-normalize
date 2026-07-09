@@ -302,6 +302,18 @@ clang your_program.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o 
 - Get human-readable error message
 - Returns static string (do not free)
 
+**Buffer helpers (for WASM hosts, usable from C too):**
+
+**`uint8_t* zens_alloc(size_t len)`** / **`void zens_dealloc(uint8_t *ptr, size_t len)`**
+- Allocate/free a buffer owned by the library's allocator
+
+**`void zens_normalize_into(ZensResult *result, const uint8_t *input, size_t input_len)`**
+**`void zens_beautify_into(ZensResult *result, const uint8_t *input, size_t input_len)`**
+- Pointer-based variants (a by-value `ZensResult` return does not cross the wasm C ABI)
+
+**`void zens_free_result(const ZensResult *result)`**
+- Free the data of a result produced by the `_into` variants
+
 #### Error Codes
 
 ```c
@@ -357,14 +369,28 @@ zig build wasm-all
 
         // Helper to encode string
         const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
         function normalize(name) {
             const bytes = encoder.encode(name);
-            const ptr = instance.exports.malloc(bytes.length);
-            const memory = new Uint8Array(instance.exports.memory.buffer);
-            memory.set(bytes, ptr);
+            const ptr = instance.exports.zens_alloc(bytes.length);
+            new Uint8Array(instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
 
-            const resultPtr = instance.exports.zens_normalize(ptr, bytes.length);
-            // ... read result from memory
+            // ZensResult on wasm32: data (u32), len (u32), error_code (i32)
+            const resultPtr = instance.exports.zens_alloc(12);
+            instance.exports.zens_normalize_into(resultPtr, ptr, bytes.length);
+
+            const view = new DataView(instance.exports.memory.buffer);
+            const dataPtr = view.getUint32(resultPtr, true);
+            const dataLen = view.getUint32(resultPtr + 4, true);
+            const errorCode = view.getInt32(resultPtr + 8, true);
+            let text = null;
+            if (errorCode === 0) {
+                text = decoder.decode(new Uint8Array(instance.exports.memory.buffer, dataPtr, dataLen).slice());
+                instance.exports.zens_free_result(resultPtr);
+            }
+            instance.exports.zens_dealloc(resultPtr, 12);
+            instance.exports.zens_dealloc(ptr, bytes.length);
+            return text;
         }
 
         console.log(normalize("Nick.ETH")); // "nick.eth"
