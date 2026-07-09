@@ -32,6 +32,16 @@ fn isHangul(cp: u21) bool {
     return cp >= S0 and cp < S1;
 }
 
+// Helper function: True if every codepoint is ASCII. ASCII is closed under
+// NFC/NFD: no ASCII codepoint decomposes, has a nonzero combining class,
+// or composes with another ASCII codepoint, so normalization is identity.
+fn isAsciiOnly(cps: []const u21) bool {
+    for (cps) |cp| {
+        if (cp >= 0x80) return false;
+    }
+    return true;
+}
+
 // Helper function: Extract combining class from packed value
 fn unpackCC(packed_val: i32) u8 {
     const upacked: u32 = @bitCast(packed_val);
@@ -250,12 +260,15 @@ pub const NF = struct {
     fn decomposed(self: *const NF, allocator: Allocator, cps: []const u21) ![]i32 {
         var p = Packer{
             .nf = self,
-            .buf = .{},
+            .buf = .empty,
             .check = false,
         };
         errdefer p.buf.deinit(allocator);
+        // Most strings do not decompose, so the input length is a good
+        // first estimate of the output length.
+        try p.buf.ensureTotalCapacity(allocator, cps.len);
 
-        var work_buf: std.ArrayListUnmanaged(u21) = .{};
+        var work_buf: std.ArrayListUnmanaged(u21) = .empty;
         defer work_buf.deinit(allocator);
 
         for (cps) |cp0| {
@@ -298,10 +311,12 @@ pub const NF = struct {
 
     // Recompose decomposed+packed codepoints while respecting blocking rules
     fn composedFromPacked(self: *const NF, allocator: Allocator, packed_cps: []const i32) ![]u21 {
-        var cps: std.ArrayListUnmanaged(u21) = .{};
+        var cps: std.ArrayListUnmanaged(u21) = .empty;
         errdefer cps.deinit(allocator);
+        // Composition can only shrink the sequence, never grow it.
+        try cps.ensureTotalCapacity(allocator, packed_cps.len);
 
-        var stack: std.ArrayListUnmanaged(u21) = .{};
+        var stack: std.ArrayListUnmanaged(u21) = .empty;
         defer stack.deinit(allocator);
 
         var prevCp: i32 = NONE;
@@ -352,6 +367,10 @@ pub const NF = struct {
     // Public method: NFD (Canonical Decomposition)
     // Decomposes all characters to their canonical decomposed form
     pub fn nfd(self: *const NF, allocator: Allocator, cps: []const u21) ![]u21 {
+        if (isAsciiOnly(cps)) {
+            return allocator.dupe(u21, cps);
+        }
+
         const packed_vals = try self.decomposed(allocator, cps);
         defer allocator.free(packed_vals);
 
@@ -366,6 +385,10 @@ pub const NF = struct {
     // Public method: NFC (Canonical Composition)
     // Decomposes then recomposes where possible
     pub fn nfc(self: *const NF, allocator: Allocator, cps: []const u21) ![]u21 {
+        if (isAsciiOnly(cps)) {
+            return allocator.dupe(u21, cps);
+        }
+
         const packed_vals = try self.decomposed(allocator, cps);
         defer allocator.free(packed_vals);
 
