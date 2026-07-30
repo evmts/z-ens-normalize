@@ -66,7 +66,7 @@ fn codepointToHex(allocator: Allocator, cp: u21) ![]u8 {
 /// Convert string to hex sequence for debugging
 /// Example: "abc" -> "61 62 63"
 fn toHexSequence(allocator: Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .{};
+    var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
 
     var view = try std.unicode.Utf8View.init(s);
@@ -130,12 +130,9 @@ fn printTestFailure(
 test "ENSIP15 normalization test suite" {
     const allocator = testing.allocator;
 
-    // Load test data from file at runtime
-    // Note: @embedFile can't access files outside the package in Zig 0.15.1
-    const file = try std.fs.cwd().openFile("test-data/ensip15-tests.json", .{});
-    defer file.close();
-    const test_data = try file.readToEndAlloc(allocator, 100 * 1024 * 1024); // 100MB max
-    defer allocator.free(test_data);
+    // Test data is embedded via an anonymous build-system import
+    // (std.fs.cwd() was removed in Zig 0.16)
+    const test_data = @embedFile("ensip15-tests.json");
 
     // Parse JSON test cases
     const parsed = try std.json.parseFromSlice(
@@ -383,15 +380,14 @@ test "confusable detection - Latin vs Cyrillic" {
     var ensip15 = try Ensip15.init(allocator);
     defer ensip15.deinit();
 
-    // Cyrillic "а" (U+0430) looks like Latin "a" (U+0061)
-    // A name with all Cyrillic confusables should be rejected
-    // Example: scope (Latin) vs scope with Cyrillic 'о' (U+043E)
-    const cyrillic_confusable = "sсоре"; // Has Cyrillic с (U+0441) and о (U+043E)
+    // Latin 's' mixed with Cyrillic соре (U+0441, U+043E, U+0440, U+0435)
+    // No script group contains both, so this is an illegal mixture
+    // (reference: ens_normalize("sсоре") -> "illegal mixture: Latin + Cyrillic")
+    const cyrillic_confusable = "sсоре";
 
     const result = ensip15.normalize(allocator, cyrillic_confusable);
 
-    // Should fail with confusable error
-    try testing.expectError(error.WholeConfusable, result);
+    try testing.expectError(error.IllegalMixture, result);
 }
 
 test "confusable detection - Mixed scripts with unique character" {
@@ -421,16 +417,23 @@ test "confusable detection - Valid same-script homoglyphs" {
     var ensip15 = try Ensip15.init(allocator);
     defer ensip15.deinit();
 
-    // Homoglyphs within the same script are allowed
-    // Example: Greek has its own similar characters
-    const greek_name = "αβγ"; // Greek alpha, beta, gamma
+    // A pure-Greek label where every codepoint has a Latin lookalike is
+    // whole-script confusable (reference: ens_normalize("αβγ") ->
+    // "whole-script confusable: Greek/Latin")
+    try testing.expectError(
+        error.WholeConfusable,
+        ensip15.normalize(allocator, "αβγ"),
+    );
+
+    // Adding δ (no Latin counterpart) breaks confusability, so the
+    // label is valid Greek
+    const greek_name = "αβγδ";
 
     const result = ensip15.normalize(allocator, greek_name);
 
-    // Should succeed
     if (result) |normalized| {
         defer allocator.free(normalized);
-        try testing.expect(normalized.len > 0);
+        try testing.expectEqualStrings(greek_name, normalized);
     } else |err| {
         std.debug.print("Unexpected error for Greek name: {any}\n", .{err});
         return err;

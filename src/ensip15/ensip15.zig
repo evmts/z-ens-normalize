@@ -7,9 +7,6 @@
 //! 1. Split name by dots into labels
 //! 2. For each label: tokenize → normalize → validate
 //! 3. Join labels back with dots
-//!
-//! Note: This is a STUB implementation. All methods use @panic("TODO: implement")
-//! and will be implemented in future tasks.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -233,7 +230,7 @@ pub const Ensip15 = struct {
         }
 
         const possibly_valid = blk: {
-            var list: std.ArrayListUnmanaged(u21) = .{};
+            var list: std.ArrayListUnmanaged(u21) = .empty;
             var pv_iter = possibly_valid_map.keyIterator();
             while (pv_iter.next()) |cp_ptr| {
                 try list.append(allocator, cp_ptr.*);
@@ -254,7 +251,7 @@ pub const Ensip15 = struct {
         }
 
         const unique_non_confusables = blk: {
-            var list: std.ArrayListUnmanaged(u21) = .{};
+            var list: std.ArrayListUnmanaged(u21) = .empty;
             var u_iter = union_map.keyIterator();
             while (u_iter.next()) |cp_ptr| {
                 try list.append(allocator, cp_ptr.*);
@@ -429,7 +426,6 @@ pub const Ensip15 = struct {
     ///   defer allocator.free(result);
     ///   // result should be "nick.eth"
     ///
-    /// Note: Currently stubbed with @panic
     pub fn normalize(self: *const Ensip15, allocator: Allocator, name: []const u8) ![]u8 {
         return self.transform(
             allocator,
@@ -457,7 +453,6 @@ pub const Ensip15 = struct {
     ///   const result = try ensip15.beautify(allocator, "nick.eth");
     ///   defer allocator.free(result);
     ///
-    /// Note: Currently stubbed with @panic
     pub fn beautify(self: *const Ensip15, allocator: Allocator, name: []const u8) ![]u8 {
         return self.transform(
             allocator,
@@ -490,7 +485,6 @@ pub const Ensip15 = struct {
     /// - beautify() - uses NFC + beautified emoji
     /// - normalizeFragment() - uses NFC/NFD + normalized emoji
     ///
-    /// Note: Currently stubbed with @panic
     fn transform(
         self: *const Ensip15,
         allocator: Allocator,
@@ -504,29 +498,34 @@ pub const Ensip15 = struct {
         defer allocator.free(labels);
 
         // Process each label
-        var normalized_labels: std.ArrayListUnmanaged([]u8) = .{};
+        var normalized_labels: std.ArrayListUnmanaged([]u8) = .empty;
         defer {
             for (normalized_labels.items) |label| allocator.free(label);
             normalized_labels.deinit(allocator);
         }
 
+        // All per-label intermediates (codepoints, tokens, NFC scratch,
+        // validation buffers) are strictly label-scoped, so they are served
+        // from an arena that is reset (retaining capacity) between labels.
+        // Only normalized_label escapes the loop; it uses the caller allocator.
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
+
         for (labels) |label| {
+            defer _ = arena_state.reset(.retain_capacity);
+            const arena = arena_state.allocator();
+
             // Convert UTF-8 to UTF-32
-            const cps = try utf8ToUtf32(allocator, label);
-            defer allocator.free(cps);
+            const cps = try utf8ToUtf32(arena, label);
 
             // Tokenize
-            const tokens = try self.outputTokenize(allocator, cps, nf_fn, ef_fn);
-            defer {
-                for (tokens) |token| allocator.free(token.codepoints);
-                allocator.free(tokens);
-            }
+            const tokens = try self.outputTokenize(arena, cps, nf_fn, ef_fn);
 
             // Normalize and validate
-            const normalized_cps = try normalizer_fn(self, allocator, tokens);
-            defer allocator.free(normalized_cps);
+            const normalized_cps = try normalizer_fn(self, arena, tokens);
 
-            // Convert back to UTF-8
+            // Convert back to UTF-8 (caller allocator: this is the only
+            // allocation that escapes the per-label scope)
             const normalized_label = try utf32ToUtf8(allocator, normalized_cps);
             try normalized_labels.append(allocator, normalized_label);
         }
@@ -556,7 +555,6 @@ pub const Ensip15 = struct {
     ///
     /// Returns: Slice of OutputTokens
     ///
-    /// Note: Currently stubbed with @panic
     fn outputTokenize(
         self: *const Ensip15,
         allocator: Allocator,
@@ -564,7 +562,7 @@ pub const Ensip15 = struct {
         nf_fn: *const fn (*const NF, Allocator, []const u21) anyerror![]u21,
         ef_fn: *const fn (*const EmojiSequence) []const u21,
     ) ![]OutputToken {
-        var tokens: std.ArrayListUnmanaged(OutputToken) = .{};
+        var tokens: std.ArrayListUnmanaged(OutputToken) = .empty;
         errdefer {
             for (tokens.items) |token| {
                 allocator.free(token.codepoints);
@@ -572,7 +570,7 @@ pub const Ensip15 = struct {
             tokens.deinit(allocator);
         }
 
-        var buf: std.ArrayListUnmanaged(u21) = .{};
+        var buf: std.ArrayListUnmanaged(u21) = .empty;
         defer buf.deinit(allocator);
 
         var i: usize = 0;
@@ -851,35 +849,39 @@ pub const Ensip15 = struct {
             return self._ASCII;
         }
 
-        // Extract non-emoji chars
-        var chars: std.ArrayListUnmanaged(u21) = .{};
+        // Extract non-emoji chars. When there is no emoji, tokens is exactly
+        // one text token whose codepoints equal cps, so use cps directly.
+        var chars: std.ArrayListUnmanaged(u21) = .empty;
         defer chars.deinit(allocator);
 
-        for (tokens) |token| {
-            if (token.emoji == null) {
-                try chars.appendSlice(allocator, token.codepoints);
+        if (has_emoji) {
+            try chars.ensureTotalCapacity(allocator, cps.len);
+            for (tokens) |token| {
+                if (token.emoji == null) {
+                    try chars.appendSlice(allocator, token.codepoints);
+                }
+            }
+            if (chars.items.len == 0) {
+                return self._EMOJI;
             }
         }
-
-        if (has_emoji and chars.items.len == 0) {
-            return self._EMOJI;
-        }
+        const chars_slice: []const u21 = if (has_emoji) chars.items else cps;
 
         try self.checkCombiningMarks(tokens);
         try self.checkFenced(cps);
 
-        const unique = try utils.uniqueRunes(allocator, chars.items);
+        const unique = try utils.uniqueRunes(allocator, chars_slice);
         defer allocator.free(unique);
 
         const group = try self.determineGroup(unique, allocator);
-        try self.checkGroup(group, chars.items, allocator);
+        try self.checkGroup(group, chars_slice, allocator);
         try self.checkWhole(group, unique, allocator);
 
         return group;
     }
 
     // ============================================================
-    // Helper Methods (stubs for future implementation)
+    // Helper Methods
     // ============================================================
 
     /// Determine which script group a set of codepoints belongs to
@@ -903,6 +905,14 @@ pub const Ensip15 = struct {
             }
 
             if (next == 0) {
+                // A codepoint that belongs to some group, just not the
+                // surviving intersection, is an illegal script mixture;
+                // only a codepoint outside every group is disallowed.
+                for (self.groups) |*g| {
+                    if (g.contains(cp)) {
+                        return Error.IllegalMixture;
+                    }
+                }
                 return Error.DisallowedCharacter;
             }
 
@@ -971,10 +981,10 @@ pub const Ensip15 = struct {
     /// Go reference: wholes.go lines 86-130
     fn checkWhole(self: *const Ensip15, group: *const Group, unique: []const u21, allocator: Allocator) !void {
         _ = group; // Used for error reporting in Go, but Zig error enum doesn't carry context
-        var shared: std.ArrayListUnmanaged(u21) = .{};
+        var shared: std.ArrayListUnmanaged(u21) = .empty;
         defer shared.deinit(allocator);
 
-        var universe: std.ArrayListUnmanaged(i32) = .{};
+        var universe: std.ArrayListUnmanaged(i32) = .empty;
         defer universe.deinit(allocator);
 
         var prev: usize = 0;
@@ -1039,14 +1049,15 @@ pub const Ensip15 = struct {
 
     /// Convert UTF-8 string to UTF-32 codepoint array
     fn utf8ToUtf32(allocator: Allocator, utf8: []const u8) ![]u21 {
-        var result: std.ArrayListUnmanaged(u21) = .{};
+        var result: std.ArrayListUnmanaged(u21) = .empty;
         errdefer result.deinit(allocator);
+        try result.ensureTotalCapacityPrecise(allocator, utf8.len);
 
         var i: usize = 0;
         while (i < utf8.len) {
             const len = try std.unicode.utf8ByteSequenceLength(utf8[i]);
             const codepoint = try std.unicode.utf8Decode(utf8[i..][0..len]);
-            try result.append(allocator, codepoint);
+            result.appendAssumeCapacity(codepoint);
             i += len;
         }
         return result.toOwnedSlice(allocator);
@@ -1054,31 +1065,18 @@ pub const Ensip15 = struct {
 
     /// Convert UTF-32 codepoint array to UTF-8 string
     fn utf32ToUtf8(allocator: Allocator, utf32: []const u21) ![]u8 {
-        var result: std.ArrayListUnmanaged(u8) = .{};
-        errdefer result.deinit(allocator);
-
+        var total: usize = 0;
         for (utf32) |cp| {
-            var buf: [4]u8 = undefined;
-            const len = try std.unicode.utf8Encode(cp, &buf);
-            try result.appendSlice(allocator, buf[0..len]);
+            total += try std.unicode.utf8CodepointSequenceLength(cp);
         }
-        return result.toOwnedSlice(allocator);
-    }
+        const result = try allocator.alloc(u8, total);
+        errdefer allocator.free(result);
 
-    /// Convert codepoint to safe display string
-    /// Note: Stubbed for future implementation
-    fn safeCodepoint(self: *const Ensip15, cp: u21) []const u8 {
-        _ = self;
-        _ = cp;
-        @panic("TODO: implement safeCodepoint()");
-    }
-
-    /// Convert codepoints to safe display string
-    /// Note: Stubbed for future implementation
-    fn safeImplode(self: *const Ensip15, cps: []const u21) []const u8 {
-        _ = self;
-        _ = cps;
-        @panic("TODO: implement safeImplode()");
+        var i: usize = 0;
+        for (utf32) |cp| {
+            i += try std.unicode.utf8Encode(cp, result[i..]);
+        }
+        return result;
     }
 };
 
@@ -1121,27 +1119,22 @@ fn normalizerBeautify(
     allocator: Allocator,
     tokens: []const OutputToken,
 ) ![]u21 {
-    const cps_const = try utils.flattenTokens(allocator, tokens);
-    errdefer allocator.free(cps_const);
+    const cps = try utils.flattenTokens(allocator, tokens);
+    errdefer allocator.free(cps);
 
-    const group = try self.checkValidLabel(allocator, cps_const, tokens);
+    const group = try self.checkValidLabel(allocator, cps, tokens);
 
-    // Apply Greek XI beautification (U+03BE -> U+039E) if not Greek group
+    // Apply Greek XI beautification (U+03BE -> U+039E) if not Greek group.
+    // cps is freshly allocated by flattenTokens, so mutate it in place.
     if (group != self._GREEK) {
-        // Need to make a mutable copy
-        const cps = try allocator.dupe(u21, cps_const);
-        allocator.free(cps_const);
-        errdefer allocator.free(cps);
-
         for (cps) |*cp| {
             if (cp.* == 0x3BE) { // Greek lowercase xi
                 cp.* = 0x39E; // Greek uppercase XI
             }
         }
-        return cps;
     }
 
-    return cps_const;
+    return cps;
 }
 
 // ============================================================

@@ -61,6 +61,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ensip15_test_mod.addImport("z_ens_normalize", mod);
+    // Test data embedded via the build system so the tests need no
+    // runtime filesystem access (std.fs.cwd() was removed in Zig 0.16)
+    ensip15_test_mod.addAnonymousImport("ensip15-tests.json", .{
+        .root_source_file = b.path("test-data/ensip15-tests.json"),
+    });
 
     const nf_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/nf_test.zig"),
@@ -68,6 +73,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     nf_test_mod.addImport("z_ens_normalize", mod);
+    nf_test_mod.addAnonymousImport("nf-tests.json", .{
+        .root_source_file = b.path("test-data/nf-tests.json"),
+    });
 
     const init_test_mod = b.createModule(.{
         .root_source_file = b.path("tests/init_test.zig"),
@@ -98,35 +106,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_init_tests.step);
 
     // ============================================================
-    // 5. Debug Executables
-    // ============================================================
-    const debug_mod = b.createModule(.{
-        .root_source_file = b.path("test_decomp.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    debug_mod.addImport("z_ens_normalize", mod);
-
-    const debug_exe = b.addExecutable(.{
-        .name = "test_decomp",
-        .root_module = debug_mod,
-    });
-    b.installArtifact(debug_exe);
-
-    const excl_mod = b.createModule(.{
-        .root_source_file = b.path("test_excl.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    excl_mod.addImport("z_ens_normalize", mod);
-
-    const excl_exe = b.addExecutable(.{
-        .name = "test_excl",
-        .root_module = excl_mod,
-    });
-    b.installArtifact(excl_exe);
-
-    // ============================================================
     // 6. C FFI Library
     // ============================================================
     // Build C-compatible library with exported C functions
@@ -142,7 +121,7 @@ pub fn build(b: *std.Build) void {
         .root_module = c_mod,
         .linkage = .static,
     });
-    c_lib.linkLibC();
+    c_mod.link_libc = true;
 
     // Add build step for C library
     const c_lib_step = b.step("c-lib", "Build C FFI library");
@@ -224,7 +203,7 @@ pub fn build(b: *std.Build) void {
 
     // Use installDirectory to copy all files from test-data/ to zig-out/test-data/
     // This will only execute if the source directory exists
-    const test_data_exists = checkDirExists(test_data_dir);
+    const test_data_exists = checkDirExists(b.graph.io, test_data_dir);
     if (test_data_exists) {
         const install_test_data = b.addInstallDirectory(.{
             .source_dir = b.path(test_data_dir),
@@ -244,8 +223,8 @@ pub fn build(b: *std.Build) void {
 // ============================================================
 
 /// Check if a directory exists at the given path
-fn checkDirExists(path: []const u8) bool {
-    var dir = std.fs.cwd().openDir(path, .{}) catch return false;
-    dir.close();
+fn checkDirExists(io: std.Io, path: []const u8) bool {
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
+    dir.close(io);
     return true;
 }

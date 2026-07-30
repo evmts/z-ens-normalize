@@ -140,7 +140,7 @@ pub fn decodeMapped(decoder: *Decoder, allocator: Allocator) !std.AutoHashMap(u2
 pub fn decodeGroups(decoder: *Decoder, allocator: Allocator) ![]Group {
     const RuneSet = @import("../util/runeset.zig").RuneSet;
 
-    var groups: std.ArrayListUnmanaged(Group) = .{};
+    var groups: std.ArrayListUnmanaged(Group) = .empty;
     errdefer {
         for (groups.items) |group| {
             allocator.free(group.name);
@@ -204,7 +204,7 @@ pub fn decodeEmojis(decoder: *Decoder, allocator: Allocator) ![]EmojiSequence {
 fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const u21) ![]EmojiSequence {
     const FE0F: u21 = 0xFE0F;
 
-    var result: std.ArrayListUnmanaged(EmojiSequence) = .{};
+    var result: std.ArrayListUnmanaged(EmojiSequence) = .empty;
     errdefer {
         for (result.items) |emoji| {
             allocator.free(emoji.normalized);
@@ -227,7 +227,7 @@ fn decodeEmojisRecursive(decoder: *Decoder, allocator: Allocator, prev: []const 
         beautified[prev.len] = @intCast(cp);
 
         // Build normalized: beautified with FE0F stripped
-        var normalized_list: std.ArrayListUnmanaged(u21) = .{};
+        var normalized_list: std.ArrayListUnmanaged(u21) = .empty;
         defer normalized_list.deinit(allocator);
 
         for (beautified) |x| {
@@ -315,7 +315,7 @@ pub fn decodeWholes(
         }
     };
 
-    var wholes: std.ArrayListUnmanaged(Whole) = .{};
+    var wholes: std.ArrayListUnmanaged(Whole) = .empty;
     errdefer {
         for (wholes.items) |*whole| {
             whole.valid.deinit(allocator);
@@ -368,7 +368,7 @@ pub fn decodeWholes(
         var cover = std.AutoHashMap(*const Group, void).init(allocator);
         defer cover.deinit();
 
-        var extents: std.ArrayListUnmanaged(*Extent) = .{};
+        var extents: std.ArrayListUnmanaged(*Extent) = .empty;
         defer {
             for (extents.items) |ext| {
                 ext.deinit();
@@ -378,7 +378,7 @@ pub fn decodeWholes(
         }
 
         // Combine valid and confused codepoints
-        var all_cps: std.ArrayListUnmanaged(u21) = .{};
+        var all_cps: std.ArrayListUnmanaged(u21) = .empty;
         defer all_cps.deinit(allocator);
         try all_cps.appendSlice(allocator, valid.runes);
         try all_cps.appendSlice(allocator, confused.runes);
@@ -429,7 +429,7 @@ pub fn decodeWholes(
 
         // For each extent, compute complement (groups NOT in extent)
         for (extents.items) |x| {
-            var comps: std.ArrayListUnmanaged(i32) = .{};
+            var comps: std.ArrayListUnmanaged(i32) = .empty;
             defer comps.deinit(allocator);
 
             var cover_iter = cover.keyIterator();
@@ -494,7 +494,7 @@ pub fn makeEmojiTree(emojis: []EmojiSequence, allocator: Allocator) !*EmojiNode 
 
     for (emojis) |*emoji| {
         // Start with just the root node
-        var nodes: std.ArrayListUnmanaged(*EmojiNode) = .{};
+        var nodes: std.ArrayListUnmanaged(*EmojiNode) = .empty;
         defer nodes.deinit(allocator);
         try nodes.append(allocator, root);
 

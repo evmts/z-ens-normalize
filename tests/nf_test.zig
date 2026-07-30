@@ -8,7 +8,7 @@ const NF = ens.NF;
 /// Helper function to convert UTF-8 bytes to Unicode codepoints (u21 array).
 /// The caller owns the returned memory and must free it.
 fn utf8ToCodepoints(allocator: std.mem.Allocator, utf8: []const u8) ![]u21 {
-    var codepoints: std.ArrayList(u21) = .{};
+    var codepoints: std.ArrayList(u21) = .empty;
     defer codepoints.deinit(allocator);
 
     var i: usize = 0;
@@ -28,7 +28,7 @@ fn utf8ToCodepoints(allocator: std.mem.Allocator, utf8: []const u8) ![]u21 {
 /// Helper function to convert Unicode codepoints (u21 array) to UTF-8 bytes.
 /// The caller owns the returned memory and must free it.
 fn codepointsToUtf8(allocator: std.mem.Allocator, cps: []const u21) ![]u8 {
-    var utf8: std.ArrayList(u8) = .{};
+    var utf8: std.ArrayList(u8) = .empty;
     defer utf8.deinit(allocator);
 
     for (cps) |cp| {
@@ -52,33 +52,18 @@ fn codepointsToUtf8(allocator: std.mem.Allocator, cps: []const u21) ![]u8 {
 //   ...
 // }
 //
-// Expected behavior:
-// - Tests WILL fail because NF.nfd() and NF.nfc() are stubbed with unreachable
-// - This is expected and correct - we're building test infrastructure first
-// - Once NF implementation is complete, tests will pass
 test "NF normalization tests" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        const leaked = gpa.deinit();
-        if (leaked == .leak) {
-            std.debug.print("Memory leak detected!\n", .{});
-        }
-    }
-    const allocator = gpa.allocator();
+    // std.testing.allocator fails the test on leaks, replacing the old
+    // hand-rolled GeneralPurposeAllocator leak check
+    const allocator = std.testing.allocator;
 
     // Initialize NF instance
-    // NOTE: This will panic because init() is stubbed
-    // That's expected - we're testing the test infrastructure
     var nf = try NF.init(allocator);
     defer nf.deinit(allocator);
 
-    // Load test data from file
-    // Note: @embedFile can't access files outside the package in Zig 0.15.1,
-    // so we read it at runtime instead
-    const file = try std.fs.cwd().openFile("test-data/nf-tests.json", .{});
-    defer file.close();
-    const json_data = try file.readToEndAlloc(allocator, 10 * 1024 * 1024); // 10MB max
-    defer allocator.free(json_data);
+    // Test data is embedded via an anonymous build-system import
+    // (std.fs.cwd() was removed in Zig 0.16)
+    const json_data = @embedFile("nf-tests.json");
 
     // Parse JSON using std.json
     var parsed = try std.json.parseFromSlice(
