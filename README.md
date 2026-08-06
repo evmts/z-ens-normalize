@@ -13,7 +13,7 @@ A complete port of [go-ens-normalize](https://github.com/adraffy/go-ens-normaliz
 - **Embedded Data** - Compressed specification data built into the binary
 - **Thread-Safe** - Singleton pattern with lazy initialization via `std.once()`
 - **Memory Efficient** - Explicit allocator parameters for full control
-- **Unicode 16.0.0** - Latest Unicode standard support
+- **Unicode 17.0.0** - Latest Unicode standard support
 - **C FFI Compatible** - Full C bindings for interoperability
 - **WebAssembly Ready** - Browser and Node.js WASM support
 
@@ -608,8 +608,8 @@ The library is designed for efficiency:
 
 ## Compatibility
 
-- **Zig Version:** 0.13.0 or later
-- **Unicode Version:** 16.0.0
+- **Zig Version:** 0.16.0 or later
+- **Unicode Version:** 17.0.0 (CLDR 47)
 - **ENSIP-15:** Final specification
 - **Reference Implementation:** [go-ens-normalize](https://github.com/adraffy/go-ens-normalize) v0.1.1
 
