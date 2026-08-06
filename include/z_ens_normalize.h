@@ -146,6 +146,56 @@ void zens_free(ZensResult result);
  */
 const char *zens_error_message(int32_t error_code);
 
+/*
+ * Buffer helpers, primarily for WebAssembly hosts (which have no libc
+ * malloc, and where ZensResult cannot be returned by value across the
+ * wasm boundary). Usable from C as well.
+ */
+
+/**
+ * Allocate a buffer owned by the library's allocator.
+ *
+ * @param len Number of bytes to allocate
+ * @return Pointer to the buffer, or NULL on allocation failure
+ */
+uint8_t *zens_alloc(size_t len);
+
+/**
+ * Free a buffer allocated with zens_alloc().
+ *
+ * @param ptr Pointer returned by zens_alloc (NULL is a no-op)
+ * @param len The exact length passed to zens_alloc
+ */
+void zens_dealloc(uint8_t *ptr, size_t len);
+
+/**
+ * Normalize an ENS name, writing the result through a pointer.
+ * Equivalent to *result = zens_normalize(input, input_len).
+ *
+ * @param result Caller-provided result struct to fill
+ * @param input UTF-8 input string
+ * @param input_len Length of input (or 0 to use strlen)
+ */
+void zens_normalize_into(ZensResult *result, const uint8_t *input, size_t input_len);
+
+/**
+ * Beautify an ENS name, writing the result through a pointer.
+ * Equivalent to *result = zens_beautify(input, input_len).
+ *
+ * @param result Caller-provided result struct to fill
+ * @param input UTF-8 input string
+ * @param input_len Length of input (or 0 to use strlen)
+ */
+void zens_beautify_into(ZensResult *result, const uint8_t *input, size_t input_len);
+
+/**
+ * Free the data of a result produced by the _into variants.
+ * Equivalent to zens_free(*result); does not free the struct itself.
+ *
+ * @param result Result previously filled by zens_normalize_into/zens_beautify_into
+ */
+void zens_free_result(const ZensResult *result);
+
 #ifdef __cplusplus
 }
 #endif

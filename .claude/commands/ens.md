@@ -453,7 +453,7 @@ This ENSIP standardizes Ethereum Name Service (ENS) name normalization process o
 
 ## Specification
 
-- Unicode version `16.0.0`
+- Unicode version `17.0.0`
   - Normalization is a living specification and should use the latest stable version of Unicode.
 - [`spec.json`](https://github.com/adraffy/ens-normalize.js/blob/main/derive/output/spec.json) contains all [necessary data](#description-of-specjson) for normalization.
 - [`nf.json`](https://github.com/adraffy/ens-normalize.js/blob/main/derive/output/nf.json) contains all [necessary data](#description-of-nfjson) for [Unicode Normalization Forms](https://unicode.org/reports/tr15/) NFC and NFD.

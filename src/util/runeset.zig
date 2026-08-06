@@ -33,7 +33,7 @@ pub const RuneSet = struct {
     /// Creates a new RuneSet with only elements matching the predicate
     /// Caller is responsible for freeing the returned RuneSet using deinit()
     pub fn filter(self: *const RuneSet, allocator: Allocator, predicate: *const fn (u21) bool) !RuneSet {
-        var filtered: std.ArrayListUnmanaged(u21) = .{};
+        var filtered: std.ArrayListUnmanaged(u21) = .empty;
         defer filtered.deinit(allocator);
 
         for (self.runes) |r| {

@@ -120,37 +120,47 @@
             [-99]: "Unknown error"
         };
 
+        // ZensResult struct layout on wasm32: data (u32), len (u32), error_code (i32)
+        const RESULT_SIZE = 12;
+
         // Helper to write string to WASM memory
         function writeStringToMemory(str) {
             const bytes = encoder.encode(str);
-            const ptr = wasmInstance.exports.malloc(bytes.length + 1);
-            const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
-            memory.set(bytes, ptr);
-            memory[ptr + bytes.length] = 0; // null terminator
+            const ptr = wasmInstance.exports.zens_alloc(bytes.length);
+            if (ptr === 0) throw new Error('wasm allocation failed');
+            // Create the view after zens_alloc: growing memory detaches old buffers
+            new Uint8Array(wasmInstance.exports.memory.buffer, ptr, bytes.length).set(bytes);
             return { ptr, len: bytes.length };
         }
 
-        // Helper to read result from WASM memory
-        function readResult(resultPtr) {
-            const memory = new Uint8Array(wasmInstance.exports.memory.buffer);
-            const view = new DataView(wasmInstance.exports.memory.buffer);
-
-            // ZensResult struct layout: data (4 bytes), len (4 bytes), error_code (4 bytes)
-            const dataPtr = view.getUint32(resultPtr, true);
-            const len = view.getUint32(resultPtr + 4, true);
-            const errorCode = view.getInt32(resultPtr + 8, true);
-
-            if (errorCode !== 0) {
-                return { error: ERROR_MESSAGES[errorCode] || "Unknown error", code: errorCode };
+        // Call zens_normalize_into / zens_beautify_into and read the result
+        function callInto(fnName, input) {
+            const { ptr, len } = writeStringToMemory(input);
+            const resultPtr = wasmInstance.exports.zens_alloc(RESULT_SIZE);
+            if (resultPtr === 0) {
+                wasmInstance.exports.zens_dealloc(ptr, len);
+                throw new Error('wasm allocation failed');
             }
+            try {
+                wasmInstance.exports[fnName](resultPtr, ptr, len);
 
-            const bytes = memory.slice(dataPtr, dataPtr + len);
-            const text = decoder.decode(bytes);
+                const view = new DataView(wasmInstance.exports.memory.buffer);
+                const dataPtr = view.getUint32(resultPtr, true);
+                const dataLen = view.getUint32(resultPtr + 4, true);
+                const errorCode = view.getInt32(resultPtr + 8, true);
 
-            // Free the result
-            wasmInstance.exports.zens_free(resultPtr);
+                if (errorCode !== 0) {
+                    return { error: ERROR_MESSAGES[errorCode] || "Unknown error", code: errorCode };
+                }
 
-            return { text };
+                // Copy the bytes out before freeing the result
+                const bytes = new Uint8Array(wasmInstance.exports.memory.buffer, dataPtr, dataLen).slice();
+                wasmInstance.exports.zens_free_result(resultPtr);
+                return { text: decoder.decode(bytes) };
+            } finally {
+                wasmInstance.exports.zens_dealloc(resultPtr, RESULT_SIZE);
+                wasmInstance.exports.zens_dealloc(ptr, len);
+            }
         }
 
         // Load WASM module
@@ -189,9 +199,7 @@
         function normalizeInput() {
             const input = document.getElementById('nameInput').value;
             try {
-                const { ptr, len } = writeStringToMemory(input);
-                const resultPtr = wasmInstance.exports.zens_normalize(ptr, len);
-                const result = readResult(resultPtr);
+                const result = callInto('zens_normalize_into', input);
 
                 displayResult('Normalize', input, result);
             } catch (err) {
@@ -203,9 +211,7 @@
         function beautifyInput() {
             const input = document.getElementById('nameInput').value;
             try {
-                const { ptr, len } = writeStringToMemory(input);
-                const resultPtr = wasmInstance.exports.zens_beautify(ptr, len);
-                const result = readResult(resultPtr);
+                const result = callInto('zens_beautify_into', input);
 
                 displayResult('Beautify', input, result);
             } catch (err) {

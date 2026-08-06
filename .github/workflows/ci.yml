@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
+        run: zig fmt --check build.zig build.zig.zon src tests
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Build library and C/WASM artifacts
+        run: zig build c-lib wasm wasi
+
+  examples:
+    name: example smoke tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build C library and WASM module
+        run: zig build c-lib wasm
+
+      - name: Run Node.js WASM example
+        run: node examples/example_node.mjs
+
+      - name: Build and run C example
+        run: |
+          gcc examples/example.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o example
+          ./example

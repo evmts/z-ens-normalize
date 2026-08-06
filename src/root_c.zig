@@ -1,6 +1,19 @@
 // C FFI bindings for z-ens-normalize
 const std = @import("std");
+const builtin = @import("builtin");
 const root = @import("root.zig");
+
+// Freestanding wasm has no OS to back GeneralPurposeAllocator's debug
+// machinery (thread ids, stack traces); use the purpose-built wasm
+// allocator there instead.
+const use_wasm_allocator = builtin.target.cpu.arch.isWasm() and
+    builtin.target.os.tag == .freestanding;
+
+// GeneralPurposeAllocator is a debug allocator; keep it (and its leak
+// detection on zens_deinit) for Debug builds, but serve release builds
+// from the faster lock-free smp_allocator.
+const use_smp_allocator = !use_wasm_allocator and builtin.mode != .Debug and
+    !builtin.single_threaded;
 
 // Error codes for C API
 pub const ZensError = enum(c_int) {
@@ -54,18 +67,19 @@ pub const ZensResult = extern struct {
     error_code: c_int,
 };
 
-// Global allocator - using GeneralPurposeAllocator for C API
-var gpa: ?std.heap.GeneralPurposeAllocator(.{}) = null;
-var gpa_mutex: std.Thread.Mutex = .{};
+// Global allocator for the C API. DebugAllocator (the 0.16 name for
+// GeneralPurposeAllocator) is statically initializable and thread-safe,
+// so no lazy-init lock is needed.
+var debug_allocator: std.heap.DebugAllocator(.{}) = .{};
 
 fn getGlobalAllocator() std.mem.Allocator {
-    gpa_mutex.lock();
-    defer gpa_mutex.unlock();
-
-    if (gpa == null) {
-        gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    if (comptime use_wasm_allocator) {
+        return std.heap.wasm_allocator;
+    } else if (comptime use_smp_allocator) {
+        return std.heap.smp_allocator;
+    } else {
+        return debug_allocator.allocator();
     }
-    return gpa.?.allocator();
 }
 
 /// Initialize the library (optional, but recommended to call once)
@@ -77,13 +91,10 @@ export fn zens_init() c_int {
 
 /// Cleanup the library (call at program exit)
 export fn zens_deinit() void {
-    gpa_mutex.lock();
-    defer gpa_mutex.unlock();
+    if (comptime use_wasm_allocator or use_smp_allocator) return;
 
-    if (gpa) |*g| {
-        _ = g.deinit();
-        gpa = null;
-    }
+    _ = debug_allocator.deinit();
+    debug_allocator = .{};
 }
 
 /// Normalize an ENS name
@@ -194,10 +205,42 @@ export fn zens_error_message(error_code: c_int) [*c]const u8 {
     };
 }
 
-// WASM-specific exports with simpler signatures
-comptime {
-    if (@import("builtin").target.isWasm()) {
-        // Export memory for WASM
-        @export(&std.heap.page_allocator, .{ .name = "memory" });
+// ============================================================
+// Buffer helpers (primarily for WASM hosts, usable from C too)
+// ============================================================
+// WASM hosts have no libc malloc, and ZensResult is returned by
+// value (which does not cross the wasm C ABI as a plain return),
+// so provide explicit buffer management and pointer-based variants.
+// The wasm linear memory itself is exported by the linker as
+// "memory" (see build.zig).
+
+/// Allocate a buffer the host can write input bytes into.
+/// Returns null on allocation failure.
+export fn zens_alloc(len: usize) ?[*]u8 {
+    const allocator = getGlobalAllocator();
+    const buf = allocator.alloc(u8, len) catch return null;
+    return buf.ptr;
+}
+
+/// Free a buffer allocated with zens_alloc (len must match).
+export fn zens_dealloc(ptr: ?[*]u8, len: usize) void {
+    if (ptr) |p| {
+        const allocator = getGlobalAllocator();
+        allocator.free(p[0..len]);
     }
+}
+
+/// Normalize, writing the result struct through a caller-provided pointer.
+export fn zens_normalize_into(result: *ZensResult, input: [*c]const u8, input_len: usize) void {
+    result.* = zens_normalize(input, input_len);
+}
+
+/// Beautify, writing the result struct through a caller-provided pointer.
+export fn zens_beautify_into(result: *ZensResult, input: [*c]const u8, input_len: usize) void {
+    result.* = zens_beautify(input, input_len);
+}
+
+/// Free the data of a result produced by the _into variants.
+export fn zens_free_result(result: *const ZensResult) void {
+    zens_free(result.*);
 }

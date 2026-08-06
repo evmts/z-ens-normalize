@@ -10,7 +10,7 @@
 //! const std = @import("std");
 //!
 //! pub fn main() !void {
-//!     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+//!     var gpa: std.heap.DebugAllocator(.{}) = .{};
 //!     defer _ = gpa.deinit();
 //!     const allocator = gpa.allocator();
 //!
@@ -104,26 +104,42 @@ var singleton_instance: Ensip15 = undefined;
 /// Initialize the singleton instance.
 /// Called exactly once by singleton_once.call().
 /// Panics if initialization fails (should never happen with valid embedded data).
+var singleton_arena: std.heap.ArenaAllocator = undefined;
+
 fn initSingleton() void {
-    // TODO: When Ensip15.init() is fully implemented, use:
-    // singleton_instance = Ensip15.init(std.heap.page_allocator) catch |err| {
-    //     @panic("Failed to initialize ENSIP15 singleton");
-    // };
-    //
-    // For now, use a stub init that works with the current structure
-    // The methods are stubbed with @panic anyway, so this is acceptable
-    singleton_instance = Ensip15.init(std.heap.page_allocator) catch
+    // Use arena allocator for fast batch allocations
+    singleton_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    singleton_instance = Ensip15.init(singleton_arena.allocator()) catch
         @panic("Failed to initialize ENSIP15 singleton");
 }
 
-/// Thread-safe singleton initialization guard.
-/// Uses std.once() to create a Once type that ensures initialization happens exactly once.
-var singleton_once = std.once(initSingleton);
+/// Thread-safe singleton initialization guard (Zig 0.16: std.once was removed).
+/// An atomic tri-state guard is used instead of a pthread mutex so that
+/// libc-free targets (wasm32-freestanding reaches shared() through the C FFI
+/// convenience functions) keep working.
+const OnceState = enum(u8) { uninit, busy, ready };
+var singleton_state = std.atomic.Value(OnceState).init(.uninit);
+
+fn callOnce() void {
+    while (true) {
+        switch (singleton_state.load(.acquire)) {
+            .ready => return,
+            .busy => std.atomic.spinLoopHint(),
+            .uninit => {
+                if (singleton_state.cmpxchgWeak(.uninit, .busy, .acquire, .acquire) == null) {
+                    initSingleton();
+                    singleton_state.store(.ready, .release);
+                    return;
+                }
+            },
+        }
+    }
+}
 
 /// Returns a shared singleton instance of Ensip15.
 ///
 /// The singleton is initialized lazily on the first call to this function.
-/// Thread-safe: uses std.once for safe concurrent access.
+/// Thread-safe: an atomic once-guard ensures safe concurrent access.
 /// The instance is initialized only once across all threads.
 ///
 /// ## Returns
@@ -140,7 +156,7 @@ var singleton_once = std.once(initSingleton);
 /// const result = try instance.normalize(allocator, "vitalik.eth");
 /// ```
 pub fn shared() *const Ensip15 {
-    singleton_once.call();
+    callOnce();
     return &singleton_instance;
 }
 
