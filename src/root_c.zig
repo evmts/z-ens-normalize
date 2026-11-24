@@ -12,7 +12,7 @@ const use_wasm_allocator = builtin.target.cpu.arch.isWasm() and
 // GeneralPurposeAllocator is a debug allocator; keep it (and its leak
 // detection on zens_deinit) for Debug builds, but serve release builds
 // from the faster lock-free smp_allocator.
-const use_smp_allocator = !use_wasm_allocator and builtin.mode != .Debug and
+const use_smp_allocator = !use_wasm_allocator and builtin.mode != @TypeOf(builtin.mode).Debug and
     !builtin.single_threaded;
 
 // Error codes for C API
@@ -34,6 +34,7 @@ pub const ZensError = enum(c_int) {
     NSMDuplicate = -14,
     NSMExcessive = -15,
     UnknownError = -99,
+    _,
 
     pub fn fromError(err: anyerror) ZensError {
         return switch (err) {
@@ -125,8 +126,9 @@ export fn zens_normalize(input: [*c]const u8, input_len: usize) ZensResult {
         };
     };
 
+    if (result.len == 0) allocator.free(result);
     return ZensResult{
-        .data = result.ptr,
+        .data = if (result.len == 0) null else result.ptr,
         .len = result.len,
         .error_code = @intFromEnum(ZensError.Success),
     };
@@ -160,8 +162,9 @@ export fn zens_beautify(input: [*c]const u8, input_len: usize) ZensResult {
         };
     };
 
+    if (result.len == 0) allocator.free(result);
     return ZensResult{
-        .data = result.ptr,
+        .data = if (result.len == 0) null else result.ptr,
         .len = result.len,
         .error_code = @intFromEnum(ZensError.Success),
     };
@@ -201,7 +204,7 @@ export fn zens_error_message(error_code: c_int) [*c]const u8 {
         .CMAfterEmoji => "Combining mark after emoji",
         .NSMDuplicate => "Non-spacing mark duplicate",
         .NSMExcessive => "Non-spacing mark excessive",
-        .UnknownError => "Unknown error",
+        else => "Unknown error",
     };
 }
 
@@ -218,7 +221,7 @@ export fn zens_error_message(error_code: c_int) [*c]const u8 {
 /// Returns null on allocation failure.
 export fn zens_alloc(len: usize) ?[*]u8 {
     const allocator = getGlobalAllocator();
-    const buf = allocator.alloc(u8, len) catch return null;
+    const buf = allocator.alloc(u8, @max(1, len)) catch return null;
     return buf.ptr;
 }
 
@@ -226,21 +229,21 @@ export fn zens_alloc(len: usize) ?[*]u8 {
 export fn zens_dealloc(ptr: ?[*]u8, len: usize) void {
     if (ptr) |p| {
         const allocator = getGlobalAllocator();
-        allocator.free(p[0..len]);
+        allocator.free(p[0..@max(1, len)]);
     }
 }
 
 /// Normalize, writing the result struct through a caller-provided pointer.
-export fn zens_normalize_into(result: *ZensResult, input: [*c]const u8, input_len: usize) void {
+export fn zens_normalize_into(result: *align(1) ZensResult, input: [*c]const u8, input_len: usize) void {
     result.* = zens_normalize(input, input_len);
 }
 
 /// Beautify, writing the result struct through a caller-provided pointer.
-export fn zens_beautify_into(result: *ZensResult, input: [*c]const u8, input_len: usize) void {
+export fn zens_beautify_into(result: *align(1) ZensResult, input: [*c]const u8, input_len: usize) void {
     result.* = zens_beautify(input, input_len);
 }
 
 /// Free the data of a result produced by the _into variants.
-export fn zens_free_result(result: *const ZensResult) void {
+export fn zens_free_result(result: *align(1) const ZensResult) void {
     zens_free(result.*);
 }

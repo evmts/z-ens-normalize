@@ -527,6 +527,7 @@ pub const Ensip15 = struct {
             // Convert back to UTF-8 (caller allocator: this is the only
             // allocation that escapes the per-label scope)
             const normalized_label = try utf32ToUtf8(allocator, normalized_cps);
+            errdefer allocator.free(normalized_label);
             try normalized_labels.append(allocator, normalized_label);
         }
 
@@ -1055,8 +1056,9 @@ pub const Ensip15 = struct {
 
         var i: usize = 0;
         while (i < utf8.len) {
-            const len = try std.unicode.utf8ByteSequenceLength(utf8[i]);
-            const codepoint = try std.unicode.utf8Decode(utf8[i..][0..len]);
+            const len = std.unicode.utf8ByteSequenceLength(utf8[i]) catch return error.InvalidUtf8;
+            if (len > utf8.len - i) return error.InvalidUtf8;
+            const codepoint = std.unicode.utf8Decode(utf8[i..][0..len]) catch return error.InvalidUtf8;
             result.appendAssumeCapacity(codepoint);
             i += len;
         }
@@ -1151,11 +1153,12 @@ fn normalizerBeautify(
 // Tests
 // ============================================================
 
-test "Ensip15 init and deinit" {
-    const allocator = std.testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
-    // Just verify it compiles
+test "owned ENSIP15 context releases its tables" {
+    // Preserve leak detection without collecting a stack trace for each table entry.
+    var debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .{};
+    defer if (debug_allocator.deinit() == .leak) @panic("ENSIP15 context leaked");
+    var ensip15 = try Ensip15.init(debug_allocator.allocator());
+    ensip15.deinit();
 }
 
 test "checkLeadingUnderscore - valid cases" {

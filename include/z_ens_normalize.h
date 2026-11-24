@@ -44,7 +44,8 @@ typedef enum {
  *
  * On success:
  *   - error_code = ZENS_SUCCESS
- *   - data points to UTF-8 normalized string
+ *   - data points to UTF-8 output, or is NULL for empty output
+ *   - the output buffer has no NUL terminator guaranteed
  *   - len is the length in bytes
  *
  * On error:
@@ -63,8 +64,8 @@ typedef struct {
 /**
  * Initialize the library.
  *
- * This function is optional but recommended to call once at program startup.
- * It initializes internal allocators and caches.
+ * Initialization is optional. The first normalization or beautification call
+ * lazily initializes the shared ENS tables.
  *
  * @return 0 on success, non-zero on failure
  */
@@ -73,8 +74,9 @@ int32_t zens_init(void);
 /**
  * Cleanup the library.
  *
- * Call this function at program exit to free any internal resources.
- * After calling this, you must call zens_init() again before using the library.
+ * Free all results and buffers before calling this function and ensure that no
+ * other thread is using the C API. The shared ENS tables live for the lifetime
+ * of the process.
  */
 void zens_deinit(void);
 
@@ -94,7 +96,7 @@ void zens_deinit(void);
  *       zens_free(result);
  *   }
  *
- * @param input Null-terminated UTF-8 input string
+ * @param input UTF-8 input bytes (NUL-terminated if input_len is 0)
  * @param input_len Length of input (or 0 to use strlen)
  * @return ZensResult with normalized name or error
  */
@@ -115,7 +117,7 @@ ZensResult zens_normalize(const uint8_t *input, size_t input_len);
  *       zens_free(result);
  *   }
  *
- * @param input Null-terminated UTF-8 input string
+ * @param input UTF-8 input bytes (NUL-terminated if input_len is 0)
  * @param input_len Length of input (or 0 to use strlen)
  * @return ZensResult with beautified name or error
  */

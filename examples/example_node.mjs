@@ -49,10 +49,11 @@ class ZensNormalize {
 
     writeStringToMemory(str) {
         const bytes = this.encoder.encode(str);
-        const ptr = this.exports.zens_alloc(bytes.length);
+        const ptr = this.exports.zens_alloc(bytes.length + 1);
         if (ptr === 0) throw new Error('wasm allocation failed');
         // Create the view after zens_alloc: growing memory detaches old buffers
         new Uint8Array(this.exports.memory.buffer, ptr, bytes.length).set(bytes);
+        new Uint8Array(this.exports.memory.buffer, ptr + bytes.length, 1)[0] = 0;
         return { ptr, len: bytes.length };
     }
 
@@ -60,7 +61,7 @@ class ZensNormalize {
         const { ptr, len } = this.writeStringToMemory(input);
         const resultPtr = this.exports.zens_alloc(RESULT_SIZE);
         if (resultPtr === 0) {
-            this.exports.zens_dealloc(ptr, len);
+            this.exports.zens_dealloc(ptr, len + 1);
             throw new Error('wasm allocation failed');
         }
         try {
@@ -85,7 +86,7 @@ class ZensNormalize {
             return { success: true, text: this.decoder.decode(bytes) };
         } finally {
             this.exports.zens_dealloc(resultPtr, RESULT_SIZE);
-            this.exports.zens_dealloc(ptr, len);
+            this.exports.zens_dealloc(ptr, len + 1);
         }
     }
 

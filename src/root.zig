@@ -101,11 +101,11 @@ pub const Error = error{
 /// Initialized lazily on first call to shared().
 var singleton_instance: Ensip15 = undefined;
 
-/// Initialize the singleton instance.
-/// Called exactly once by singleton_once.call().
-/// Panics if initialization fails (should never happen with valid embedded data).
 var singleton_arena: std.heap.ArenaAllocator = undefined;
 
+/// Initialize the singleton instance.
+/// Called exactly once by singleton_once.call().
+/// Panics if initialization fails.
 fn initSingleton() void {
     // Use arena allocator for fast batch allocations
     singleton_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -252,18 +252,5 @@ test "singleton initialization is thread-safe" {
 }
 
 test "singleton returns const pointer" {
-    const instance = shared();
-
-    // This test verifies that we get a const pointer
-    // The type system enforces this at compile time
-    const T = @TypeOf(instance);
-    const type_info = @typeInfo(T);
-
-    // Check that it's a pointer type
-    if (type_info != .pointer) {
-        return error.NotAPointer;
-    }
-
-    // Check that it's const
-    try std.testing.expect(type_info.pointer.is_const);
+    try std.testing.expect(@TypeOf(shared()) == *const Ensip15);
 }

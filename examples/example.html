@@ -126,10 +126,11 @@
         // Helper to write string to WASM memory
         function writeStringToMemory(str) {
             const bytes = encoder.encode(str);
-            const ptr = wasmInstance.exports.zens_alloc(bytes.length);
+            const ptr = wasmInstance.exports.zens_alloc(bytes.length + 1);
             if (ptr === 0) throw new Error('wasm allocation failed');
             // Create the view after zens_alloc: growing memory detaches old buffers
             new Uint8Array(wasmInstance.exports.memory.buffer, ptr, bytes.length).set(bytes);
+            new Uint8Array(wasmInstance.exports.memory.buffer, ptr + bytes.length, 1)[0] = 0;
             return { ptr, len: bytes.length };
         }
 
@@ -138,7 +139,7 @@
             const { ptr, len } = writeStringToMemory(input);
             const resultPtr = wasmInstance.exports.zens_alloc(RESULT_SIZE);
             if (resultPtr === 0) {
-                wasmInstance.exports.zens_dealloc(ptr, len);
+                wasmInstance.exports.zens_dealloc(ptr, len + 1);
                 throw new Error('wasm allocation failed');
             }
             try {
@@ -159,7 +160,7 @@
                 return { text: decoder.decode(bytes) };
             } finally {
                 wasmInstance.exports.zens_dealloc(resultPtr, RESULT_SIZE);
-                wasmInstance.exports.zens_dealloc(ptr, len);
+                wasmInstance.exports.zens_dealloc(ptr, len + 1);
             }
         }
 

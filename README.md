@@ -11,7 +11,7 @@ A complete port of [go-ens-normalize](https://github.com/adraffy/go-ens-normaliz
 - **Zero Dependencies** - No external packages required
 - **100% ENSIP-15 Compliant** - Passes all official validation tests
 - **Embedded Data** - Compressed specification data built into the binary
-- **Thread-Safe** - Singleton pattern with lazy initialization via `std.once()`
+- **Thread-Safe** - Lazily initialized shared instance
 - **Memory Efficient** - Explicit allocator parameters for full control
 - **Unicode 17.0.0** - Latest Unicode standard support
 - **C FFI Compatible** - Full C bindings for interoperability
@@ -19,23 +19,13 @@ A complete port of [go-ens-normalize](https://github.com/adraffy/go-ens-normaliz
 
 ## Installation
 
-### Using build.zig.zon
+From a Zig project with a `build.zig.zon`, add the dependency with Zig's package manager:
 
-Add to your `build.zig.zon`:
-
-```zig
-.{
-    .name = "my-project",
-    .version = "0.1.0",
-    .dependencies = .{
-        .z_ens_normalize = .{
-            .url = "https://github.com/YOUR_USERNAME/z-ens-normalize/archive/refs/tags/v0.1.0.tar.gz",
-            // Use zig fetch to get the correct hash
-            .hash = "...",
-        },
-    },
-}
+```sh
+zig fetch --save=z_ens_normalize https://github.com/evmts/z-ens-normalize/archive/refs/heads/main.tar.gz
 ```
+
+Use a commit archive URL to pin a particular revision.
 
 ### In your build.zig
 
@@ -55,7 +45,7 @@ const std = @import("std");
 const ens = @import("z_ens_normalize");
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa: std.heap.DebugAllocator(.{}) = .{};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -69,7 +59,7 @@ pub fn main() !void {
     const beautified = try ens.beautify(allocator, "🚀RaFFY🚴‍♂️.eTh");
     defer allocator.free(beautified);
     std.debug.print("Beautified: {s}\n", .{beautified});
-    // Output: "🚀raffy🚴‍♂️.eth"
+    // Output: "🚀️raffy🚴‍♂️.eth"
 }
 ```
 
@@ -118,7 +108,8 @@ For more control, you can use the singleton directly or create your own instance
 
 #### `shared() *const Ensip15`
 
-Returns the thread-safe singleton instance.
+Returns a borrowed, read-only pointer to the lazily initialized singleton. The
+shared instance lives for the lifetime of the process.
 
 ```zig
 const instance = ens.shared();
@@ -128,7 +119,8 @@ defer allocator.free(result);
 
 #### `Ensip15.init(allocator: Allocator) !Ensip15`
 
-Creates a new ENSIP15 normalizer instance.
+Creates an owned normalizer instance. Call `deinit()` before destroying its
+allocator. Free each returned name with the allocator passed to the operation.
 
 ```zig
 var normalizer = try ens.Ensip15.init(allocator);
@@ -143,13 +135,15 @@ defer allocator.free(result);
 All normalization functions return errors for invalid input:
 
 ```zig
-const result = ens.normalize(allocator, "invalid..name") catch |err| switch (err) {
-    error.EmptyLabel => std.debug.print("Label cannot be empty\n", .{}),
-    error.DisallowedCharacter => std.debug.print("Contains disallowed character\n", .{}),
-    error.IllegalMixture => std.debug.print("Illegal script mixture\n", .{}),
-    error.WholeConfusable => std.debug.print("Confusable with another name\n", .{}),
-    else => return err,
+const result = ens.normalize(allocator, "invalid..name") catch |err| {
+    switch (err) {
+        error.EmptyLabel => std.debug.print("Label cannot be empty\n", .{}),
+        error.InvalidUtf8 => std.debug.print("Input is not valid UTF-8\n", .{}),
+        else => {},
+    }
+    return err;
 };
+defer allocator.free(result);
 ```
 
 ### Error Types
@@ -177,7 +171,8 @@ The library defines the following error types:
 The library also exposes Unicode normalization functions:
 
 ```zig
-const nf = ens.NF.init();
+var nf = try ens.NF.init(allocator);
+defer nf.deinit(allocator);
 
 // NFC (Canonical Composition)
 const composed = try nf.nfc(allocator, &[_]u21{ 0x61, 0x300 }); // "à"
@@ -190,39 +185,26 @@ defer allocator.free(decomposed);
 
 ## Testing
 
-The library includes comprehensive test suites:
+Run the same checks as CI from the repository root. The end-to-end tests require
+Node.js on your PATH.
 
-### Run All Tests
-
-```bash
+```sh
+zig build install c-lib wasm-all copy-test-data
 zig build test
+zig build fuzz
+zig build e2e
+zig build bench
 ```
 
-### Test Categories
-
-1. **ENSIP-15 Validation Tests** (`tests/ensip15_test.zig`)
-   - 100% pass rate on official ENSIP-15 test suite
-   - Tests normalization, beautification, and error cases
-
-2. **Unicode Normalization Tests** (`tests/nf_test.zig`)
-   - 100% pass rate on Unicode normalization test cases
-   - Tests NFC, NFD, and Hangul composition
-
-3. **Initialization Tests** (`tests/init_test.zig`)
-   - Tests data loading from embedded binary
-   - Validates spec.bin and nf.bin decompression
-
-### Test Data
-
-Test data is automatically copied from the reference implementation:
-
-```bash
-zig build copy-test-data
-```
-
-This downloads:
-- `ensip15-tests.json` - ENSIP-15 validation test cases
-- `nf-tests.json` - Unicode normalization test cases
+- `test` runs the unit tests, concurrent singleton initialization test, and the
+  embedded ENSIP-15 and Unicode normalization conformance fixtures.
+- `fuzz` runs a reproducible set of generated ENS names and arbitrary bytes,
+  checking canonicalization, idempotence, validation errors, and allocation failure cleanup.
+- `e2e` exercises the static library from C and the freestanding WebAssembly
+  module from Node.js, including result ownership and malformed input.
+- `bench` reports cold first-call time and average warm normalization time across
+  ASCII, combining marks, and emoji. CI checks for successful execution.
+- `copy-test-data` installs the checked-in fixtures to `zig-out/test-data/`.
 
 ## C FFI Bindings
 
@@ -282,13 +264,12 @@ clang your_program.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o 
 - Returns 0 on success
 
 **`void zens_deinit(void)`**
-- Cleanup library resources
-- Call at program exit
+- Call after all users of the C API are finished and all results and buffers are freed. The shared ENS tables live for the process lifetime.
 
 **`ZensResult zens_normalize(const uint8_t *input, size_t input_len)`**
 - Normalize an ENS name
-- `input_len` can be 0 to use strlen()
-- Returns `ZensResult` with normalized name or error
+- Supply an exact byte length for a sized buffer. Pass 0 for a NUL-terminated string, including the empty string.
+- On success, `data` contains exactly `len` bytes of UTF-8, or is NULL for empty output. On failure, `data` is NULL and `len` is 0.
 
 **`ZensResult zens_beautify(const uint8_t *input, size_t input_len)`**
 - Beautify an ENS name with visual enhancements
@@ -305,7 +286,7 @@ clang your_program.c -I./zig-out/include -L./zig-out/lib -lz_ens_normalize_c -o 
 **Buffer helpers (for WASM hosts, usable from C too):**
 
 **`uint8_t* zens_alloc(size_t len)`** / **`void zens_dealloc(uint8_t *ptr, size_t len)`**
-- Allocate/free a buffer owned by the library's allocator
+- Allocate/free a buffer owned by the library's allocator. Pass the original allocation length to `zens_dealloc`.
 
 **`void zens_normalize_into(ZensResult *result, const uint8_t *input, size_t input_len)`**
 **`void zens_beautify_into(ZensResult *result, const uint8_t *input, size_t input_len)`**
@@ -372,8 +353,9 @@ zig build wasm-all
         const decoder = new TextDecoder();
         function normalize(name) {
             const bytes = encoder.encode(name);
-            const ptr = instance.exports.zens_alloc(bytes.length);
+            const ptr = instance.exports.zens_alloc(bytes.length + 1);
             new Uint8Array(instance.exports.memory.buffer, ptr, bytes.length).set(bytes);
+            new Uint8Array(instance.exports.memory.buffer, ptr + bytes.length, 1)[0] = 0;
 
             // ZensResult on wasm32: data (u32), len (u32), error_code (i32)
             const resultPtr = instance.exports.zens_alloc(12);
@@ -389,7 +371,7 @@ zig build wasm-all
                 instance.exports.zens_free_result(resultPtr);
             }
             instance.exports.zens_dealloc(resultPtr, 12);
-            instance.exports.zens_dealloc(ptr, bytes.length);
+            instance.exports.zens_dealloc(ptr, bytes.length + 1);
             return text;
         }
 
@@ -608,7 +590,7 @@ The library is designed for efficiency:
 
 ## Compatibility
 
-- **Zig Version:** 0.16.0 or later
+- **Zig versions tested in CI** — 0.15.1, 0.15.2, 0.16.0, and 0.17.1
 - **Unicode Version:** 17.0.0 (CLDR 47)
 - **ENSIP-15:** Final specification
 - **Reference Implementation:** [go-ens-normalize](https://github.com/adraffy/go-ens-normalize) v0.1.1
@@ -619,7 +601,7 @@ Contributions are welcome! This implementation aims to maintain 100% compatibili
 
 ### Development Guidelines
 
-1. Run tests before submitting PR: `zig build test`
+1. Run the checks listed in [Testing](#testing) before submitting a pull request.
 2. Follow Zig style conventions
 3. Add tests for new functionality
 4. Update documentation as needed

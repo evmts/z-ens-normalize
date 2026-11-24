@@ -190,6 +190,27 @@ pub fn build(b: *std.Build) void {
     wasm_all_step.dependOn(wasm_step);
     wasm_all_step.dependOn(wasi_step);
 
+    const fuzz_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_mod.addImport("z_ens_normalize", mod);
+    const fuzz_tests = b.addTest(.{ .root_module = fuzz_mod });
+    const fuzz_step = b.step("fuzz", "Run generated ENS input properties");
+    fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
+
+    const c_api_test = addCProgram(b, "c-api-test", "tests/c_api_test.c", c_lib);
+    const wasm_test = b.addSystemCommand(&.{ "node", "tests/wasm_test.mjs" });
+    wasm_test.addFileArg(wasm_lib.getEmittedBin());
+    const e2e_step = b.step("e2e", "Run the C ABI and Node.js WebAssembly integration tests");
+    e2e_step.dependOn(&b.addRunArtifact(c_api_test).step);
+    e2e_step.dependOn(&wasm_test.step);
+
+    const benchmark = addCProgram(b, "benchmark", "tests/benchmark.c", c_lib);
+    const bench_step = b.step("bench", "Measure cold initialization and warm normalization");
+    bench_step.dependOn(&b.addRunArtifact(benchmark).step);
+
     // ============================================================
     // 8. Test Data Copy Step
     // ============================================================
@@ -197,34 +218,27 @@ pub fn build(b: *std.Build) void {
     // This is useful for tests that need to load external data files
     const copy_test_data = b.step("copy-test-data", "Copy test data files to zig-out/test-data/");
 
-    // Check if test-data directory exists before attempting to copy
-    const test_data_dir = "test-data";
-    const install_subdir = "test-data";
-
-    // Use installDirectory to copy all files from test-data/ to zig-out/test-data/
-    // This will only execute if the source directory exists
-    const test_data_exists = checkDirExists(b.graph.io, test_data_dir);
-    if (test_data_exists) {
-        const install_test_data = b.addInstallDirectory(.{
-            .source_dir = b.path(test_data_dir),
-            .install_dir = .prefix,
-            .install_subdir = install_subdir,
-        });
-        copy_test_data.dependOn(&install_test_data.step);
-
-        // Optionally make tests depend on test data being copied
-        // Uncomment the line below if tests require the data files
-        // test_step.dependOn(copy_test_data);
-    }
+    const install_test_data = b.addInstallDirectory(.{
+        .source_dir = b.path("test-data"),
+        .install_dir = .prefix,
+        .install_subdir = "test-data",
+    });
+    copy_test_data.dependOn(&install_test_data.step);
 }
 
-// ============================================================
-// Helper Functions
-// ============================================================
-
-/// Check if a directory exists at the given path
-fn checkDirExists(io: std.Io, path: []const u8) bool {
-    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch return false;
-    dir.close(io);
-    return true;
+fn addCProgram(
+    b: *std.Build,
+    name: []const u8,
+    source: []const u8,
+    c_lib: *std.Build.Step.Compile,
+) *std.Build.Step.Compile {
+    const module = b.createModule(.{
+        .target = c_lib.root_module.resolved_target.?,
+        .optimize = c_lib.root_module.optimize,
+        .link_libc = true,
+    });
+    module.addIncludePath(b.path("include"));
+    module.addCSourceFile(.{ .file = b.path(source), .flags = &.{ "-Wall", "-Wextra", "-Werror" } });
+    module.linkLibrary(c_lib);
+    return b.addExecutable(.{ .name = name, .root_module = module });
 }

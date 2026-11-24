@@ -7,20 +7,14 @@
 //! - Reads test-data/ensip15-tests.json using @embedFile
 //! - Parses JSON test cases using std.json
 //! - Skips first entry (version metadata)
-//! - Creates ENSIP15 instance with init()
+//! - Uses the shared ENSIP15 instance
 //! - For each test case: calls normalize()
 //! - Validates both success and error cases
-//!
-//! Expected Behavior:
-//! - Tests will FAIL with panic (this is expected)
-//! - The ENSIP15 normalization methods are stubbed with @panic
-//! - As Tasks 19-23 are implemented, tests will progressively pass
 //!
 //! Memory Management:
 //! - Uses std.testing.allocator (detects leaks)
 //! - Frees all normalized strings after validation
 //! - Parser cleanup with defer parsed.deinit()
-//! - ENSIP15 cleanup with defer ensip15.deinit()
 
 const std = @import("std");
 const testing = std.testing;
@@ -28,7 +22,6 @@ const Allocator = std.mem.Allocator;
 
 // Import ENSIP15 module from the built library
 const ens = @import("z_ens_normalize");
-const Ensip15 = ens.Ensip15;
 
 // ============================================================
 // Test Case Structure
@@ -160,9 +153,7 @@ test "ENSIP15 normalization test suite" {
         std.debug.print("Comment: {s}\n\n", .{comment});
     }
 
-    // Create ENSIP15 instance
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
+    const ensip15 = ens.shared();
 
     // Track statistics
     var total_tests: usize = 0;
@@ -181,8 +172,6 @@ test "ENSIP15 normalization test suite" {
         else
             test_case.name;
 
-        // Call normalize - this will panic because it's stubbed
-        // We wrap it in a block to handle the panic gracefully
         const result = ensip15.normalize(allocator, test_case.name);
 
         if (test_case.@"error") {
@@ -364,21 +353,13 @@ test "test case idempotent" {
     try testing.expectEqualStrings("test", expected);
 }
 
-test "ENSIP15 init and deinit" {
-    const allocator = testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
-    // Verify basic initialization works
-}
-
 // ============================================================
 // Confusable Detection Tests
 // ============================================================
 
 test "confusable detection - Latin vs Cyrillic" {
     const allocator = testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
+    const ensip15 = ens.shared();
 
     // Latin 's' mixed with Cyrillic соре (U+0441, U+043E, U+0440, U+0435)
     // No script group contains both, so this is an illegal mixture
@@ -392,8 +373,7 @@ test "confusable detection - Latin vs Cyrillic" {
 
 test "confusable detection - Mixed scripts with unique character" {
     const allocator = testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
+    const ensip15 = ens.shared();
 
     // If a name contains a unique non-confusable character,
     // it should pass even if other characters are confusable
@@ -414,8 +394,7 @@ test "confusable detection - Mixed scripts with unique character" {
 
 test "confusable detection - Valid same-script homoglyphs" {
     const allocator = testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
+    const ensip15 = ens.shared();
 
     // A pure-Greek label where every codepoint has a Latin lookalike is
     // whole-script confusable (reference: ens_normalize("αβγ") ->
@@ -442,8 +421,7 @@ test "confusable detection - Valid same-script homoglyphs" {
 
 test "confusable detection - ASCII only" {
     const allocator = testing.allocator;
-    var ensip15 = try Ensip15.init(allocator);
-    defer ensip15.deinit();
+    const ensip15 = ens.shared();
 
     // Pure ASCII should never be confusable
     const ascii_name = "hello";
