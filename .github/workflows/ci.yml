@@ -13,14 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-15]
         zig: ['0.15.1', '0.15.2', '0.16.0', '0.17.1']
-        exclude:
-          - { os: macos-latest, zig: '0.15.1' }
-          - { os: macos-latest, zig: '0.15.2' }
-        include:
-          - { os: macos-15, zig: '0.15.1' }
-          - { os: macos-15, zig: '0.15.2' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
