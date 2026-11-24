@@ -15,6 +15,12 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         zig: ['0.15.1', '0.15.2', '0.16.0', '0.17.1']
+        exclude:
+          - { os: macos-latest, zig: '0.15.1' }
+          - { os: macos-latest, zig: '0.15.2' }
+        include:
+          - { os: macos-15, zig: '0.15.1' }
+          - { os: macos-15, zig: '0.15.2' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +30,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+      # Zig 0.15 cannot link its build runner with the newer macOS SDK.
+      - name: Select the macOS 15 SDK
+        if: matrix.os == 'macos-15'
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"
       - name: Check formatting
         if: matrix.zig == '0.15.1'
         run: zig fmt --check build.zig build.zig.zon src tests
