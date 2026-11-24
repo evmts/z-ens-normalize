@@ -8,14 +8,13 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: ${{ matrix.os }} / Zig ${{ matrix.zig }}
+  linux:
+    name: Linux / Zig ${{ matrix.zig }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-15]
         zig: ['0.15.1', '0.15.2', '0.16.0', '0.17.1']
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -24,20 +23,51 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      # Zig 0.15 cannot link its build runner with the newer macOS SDK.
-      - name: Select the macOS 15 SDK
-        if: matrix.os == 'macos-15'
-        run: echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"
       - name: Check formatting
         if: matrix.zig == '0.15.1'
         run: zig fmt --check build.zig build.zig.zon src tests
-      - name: Build Zig, C, WASM and WASI artifacts
-        run: zig build install c-lib wasm-all copy-test-data
-      - name: Run unit and conformance tests
-        run: zig build test --summary all
-      - name: Run generated ENS input properties
-        run: zig build fuzz --summary all
-      - name: Run C ABI and WASM integration tests
-        run: zig build e2e --summary all
-      - name: Run the normalization benchmark
-        run: zig build bench --summary all
+      - name: Build artifacts and run checks
+        run: &checks |
+          zig version
+          zig build install c-lib wasm-all copy-test-data --summary all
+          zig build test --summary all
+          zig build fuzz --summary all
+          zig build e2e --summary all
+          zig build bench --summary all
+
+  macos:
+    name: macOS / Zig 0.15.1 through 0.17.1
+    # Run all versions on one macOS runner to avoid waiting for four slots.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # Zig 0.15 cannot link its build runner with the newer macOS SDK.
+      - name: Select the macOS 15 SDK
+        run: echo "DEVELOPER_DIR=/Applications/Xcode_16.4.app/Contents/Developer" >> "$GITHUB_ENV"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.15.1'
+          use-cache: false
+      - name: Build and test with Zig 0.15.1
+        run: *checks
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.15.2'
+          use-cache: false
+      - name: Build and test with Zig 0.15.2
+        run: *checks
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+          use-cache: false
+      - name: Build and test with Zig 0.16.0
+        run: *checks
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.17.1'
+          use-cache: false
+      - name: Build and test with Zig 0.17.1
+        run: *checks
